@@ -149,7 +149,6 @@ if st.button("🚀 Lancer le calcul", type="primary", disabled=not (file_tn and 
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
-
         st.divider()
         st.subheader("📊 Aperçu des données traitées (5 premières lignes)")
         tab1, tab2 = st.tabs(["Terrain Naturel", "Terrain Projeté"])
