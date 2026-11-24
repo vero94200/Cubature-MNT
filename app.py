@@ -38,8 +38,8 @@ crs_choice = st.sidebar.selectbox(
     "Système de vos fichiers d'entrée :",
     options=[
         "Lambert-93 (EPSG:2154) - Standard France", 
-        "WGS84 (GPS - Latitude/Longitude)", 
-        "Autre projection métrique (ex: CC, Suisse, etc.)"
+        "WGS84 (EPSG:4326) - (Latitude/Longitude)", 
+        "Lambert-93 CC47 (EPSG:3947) - Conique Conforme zone 47"
     ]
 )
 
