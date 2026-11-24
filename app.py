@@ -109,7 +109,7 @@ if st.button("🚀 Lancer le calcul", type="primary", disabled=not (file_tn and 
             else:
                 deblais, remblais = calculate_cubature_grid(df_tn, df_proj, resolution)
 
-        # Affichage des résultats
+                # Affichage des résultats
         st.success("✅ Calcul terminé avec succès !")
         
         kpi1, kpi2, kpi3 = st.columns(3)
@@ -119,7 +119,7 @@ if st.button("🚀 Lancer le calcul", type="primary", disabled=not (file_tn and 
         balance = deblais - remblais
         kpi3.metric("Balance", f"{balance:,.2f} m³", help="Positif = Excédent de déblais, Négatif = Besoin de remblais")
 
-                st.divider()
+        st.divider()
         st.subheader("📥 Export des résultats pour rapport")
         
         # Création d'un DataFrame récapitulatif propre
@@ -137,7 +137,6 @@ if st.button("🚀 Lancer le calcul", type="primary", disabled=not (file_tn and 
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df_resultat.to_excel(writer, index=False, sheet_name='Cubature')
-            # On ajoute aussi un aperçu des données brutes dans un deuxième onglet Excel
             df_tn.head(100).to_excel(writer, index=False, sheet_name='Apercu_TN')
             df_proj.head(100).to_excel(writer, index=False, sheet_name='Apercu_Projet')
         
@@ -149,6 +148,7 @@ if st.button("🚀 Lancer le calcul", type="primary", disabled=not (file_tn and 
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
+
         st.divider()
         st.subheader("📊 Aperçu des données traitées (5 premières lignes)")
         tab1, tab2 = st.tabs(["Terrain Naturel", "Terrain Projeté"])
