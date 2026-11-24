@@ -3,13 +3,14 @@ import pandas as pd
 import numpy as np
 import io
 import plotly.express as px
+import plotly.graph_objects as go
 from scipy.interpolate import griddata
 from src.cubature import calculate_cubature_tin, calculate_cubature_grid
 
 # ==========================================
 # 1. 🔒 SYSTÈME D'AUTHENTIFICATION SIMPLE
 # ==========================================
-MOT_DE_PASSE_ATTENDU = ""  # <-- CHANGEZ CE MOT DE PASSE ICI
+MOT_DE_PASSE_ATTENDU = "chantier2024"  # <-- CHANGEZ CE MOT DE PASSE ICI
 
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
@@ -26,7 +27,7 @@ if not st.session_state.authenticated:
             st.rerun()
         else:
             st.error("Mot de passe incorrect.")
-    st.stop() # Arrête l'exécution du reste du script si pas authentifié
+    st.stop()
 
 # ==========================================
 # 2. APPLICATION PRINCIPALE
@@ -34,15 +35,54 @@ if not st.session_state.authenticated:
 st.set_page_config(page_title="Calcul de Cubature MNT", layout="wide", page_icon="🏗️")
 
 st.title("🏗️ Calculateur Professionnel de Cubature MNT")
-st.markdown("Importez vos fichiers de points topographiques (CSV) pour calculer automatiquement les déblais et remblais avec carte de répartition.")
+
+# --- SECTION FORMAT DES FICHIERS ---
+with st.expander("📋 Format des fichiers CSV attendus (cliquez pour voir)", expanded=False):
+    st.markdown("""
+    ### 📄 Format requis pour vos fichiers CSV
+    
+    Vos fichiers doivent être au format **CSV** (séparateur virgule `,` ou point-virgule `;`) avec **3 colonnes obligatoires** :
+    
+    | Colonne | Noms acceptés | Description |
+    |---------|---------------|-------------|
+    | **Est** | `Est`, `X`, `Easting`, `Longitude`, `Lon` | Coordonnée Est (mètres ou degrés) |
+    | **Nord** | `Nord`, `Y`, `Northing`, `Latitude`, `Lat` | Coordonnée Nord (mètres ou degrés) |
+    | **Altitude** | `Altitude`, `Z`, `Elev`, `Elevation`, `H` | Altitude (mètres) |
+    
+    ### 📝 Exemple de fichier valide :
+    ```csv
+    Est,Nord,Altitude
+    600000.50,6400000.20,150.50
+    600005.00,6400002.10,151.20
+    600010.30,6400005.80,149.80
+    ```
+    
+    ### ✅ Compatibilité :
+    - **Séparateurs** : virgule (`,`) ou point-virgule (`;`) détectés automatiquement
+    - **En-têtes** : la première ligne doit contenir les noms de colonnes
+    - **Décimales** : utiliser le point (`.`) pour les décimales (ex: `150.50`)
+    - **Encodage** : UTF-8 recommandé
+    
+    ### 📥 Comment exporter depuis Excel :
+    1. Ouvrez votre fichier Excel
+    2. Cliquez sur **Fichier → Enregistrer sous**
+    3. Choisissez le format **CSV (séparateur: point-virgule) (*.csv)**
+    4. Assurez-vous que la première ligne contient les noms de colonnes
+    """)
+
+st.markdown("---")
 
 col1, col2 = st.columns(2)
 with col1:
     st.subheader("1. Terrain Naturel (TN)")
     file_tn = st.file_uploader("Glissez-déposez le fichier TN ici", type=["csv", "txt"])
+    if file_tn is not None:
+        st.success(f"✅ {file_tn.name} chargé")
 with col2:
     st.subheader("2. Terrain Projeté")
     file_proj = st.file_uploader("Glissez-déposez le fichier Projet ici", type=["csv", "txt"])
+    if file_proj is not None:
+        st.success(f"✅ {file_proj.name} chargé")
 
 # Barre latérale
 st.sidebar.header("⚙️ Paramètres de calcul")
@@ -119,7 +159,7 @@ if st.button("🚀 Lancer le calcul", type="primary", disabled=not (file_tn and 
             balance = deblais - remblais
 
         # ==========================================
-        # 3. AFFICHAGE DES RÉSULTATS & CARTE
+        # 3. AFFICHAGE DES RÉSULTATS
         # ==========================================
         st.success("✅ Calcul terminé avec succès !")
         
@@ -128,14 +168,16 @@ if st.button("🚀 Lancer le calcul", type="primary", disabled=not (file_tn and 
         kpi2.metric("Volume de REMBLAIS (ajusté)", f"{remblais:,.2f} m³", delta=f"{remblais_brut:,.2f} m³ (brut)" if compactage != 1.0 else None)
         kpi3.metric("Balance", f"{balance:,.2f} m³")
 
-        # --- GÉNÉRATION DE LA CARTE DE RÉPARTITION ---
-        st.subheader("🗺️ Carte de répartition des hauteurs (Déblai / Remblai)")
-        st.info("Génération de la grille de visualisation...")
+        # ==========================================
+        # 4. GRAPHIQUES : PROFILS + CARTE
+        # ==========================================
+        st.subheader("📈 Profils en coupe (TN vs Projet)")
+        st.info("Ces graphiques montrent les lignes du Terrain Naturel (bleu) et du Terrain Projeté (rouge) selon deux coupes.")
         
+        # Préparation des données interpolées sur une grille
         x_min, x_max = df_tn['Est'].min(), df_tn['Est'].max()
         y_min, y_max = df_tn['Nord'].min(), df_tn['Nord'].max()
         
-        # Résolution adaptative pour la carte (max 100x100 points pour la rapidité)
         res_map = max((x_max - x_min) / 100, (y_max - y_min) / 100, 1.0)
         xi = np.arange(x_min, x_max, res_map)
         yi = np.arange(y_min, y_max, res_map)
@@ -143,6 +185,50 @@ if st.button("🚀 Lancer le calcul", type="primary", disabled=not (file_tn and 
         
         zi_tn = griddata((df_tn['Est'], df_tn['Nord']), df_tn['Altitude'], (xi_grid, yi_grid), method='linear')
         zi_proj = griddata((df_proj['Est'], df_proj['Nord']), df_proj['Altitude'], (xi_grid, yi_grid), method='linear')
+        
+        # Coupe 1 : selon l'axe Est (à la valeur médiane de Nord)
+        y_mid_idx = len(yi) // 2
+        x_profile = xi
+        z_tn_profile_1 = zi_tn[y_mid_idx, :]
+        z_proj_profile_1 = zi_proj[y_mid_idx, :]
+        
+        # Coupe 2 : selon l'axe Nord (à la valeur médiane de Est)
+        x_mid_idx = len(xi) // 2
+        y_profile = yi
+        z_tn_profile_2 = zi_tn[:, x_mid_idx]
+        z_proj_profile_2 = zi_proj[:, x_mid_idx]
+        
+        # Affichage des deux profils côte à côte
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            fig1 = go.Figure()
+            fig1.add_trace(go.Scatter(x=x_profile, y=z_tn_profile_1, mode='lines', name='Terrain Naturel (TN)', line=dict(color='blue', width=2)))
+            fig1.add_trace(go.Scatter(x=x_profile, y=z_proj_profile_1, mode='lines', name='Terrain Projeté', line=dict(color='red', width=2)))
+            fig1.update_layout(
+                title=f"Coupe Est-Ouest (à Nord = {yi[y_mid_idx]:.1f} m)",
+                xaxis_title="Coordonnée Est (m)",
+                yaxis_title="Altitude (m)",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
+            st.plotly_chart(fig1, use_container_width=True)
+        
+        with col2:
+            fig2 = go.Figure()
+            fig2.add_trace(go.Scatter(x=y_profile, y=z_tn_profile_2, mode='lines', name='Terrain Naturel (TN)', line=dict(color='blue', width=2)))
+            fig2.add_trace(go.Scatter(x=y_profile, y=z_proj_profile_2, mode='lines', name='Terrain Projeté', line=dict(color='red', width=2)))
+            fig2.update_layout(
+                title=f"Coupe Nord-Sud (à Est = {xi[x_mid_idx]:.1f} m)",
+                xaxis_title="Coordonnée Nord (m)",
+                yaxis_title="Altitude (m)",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
+            st.plotly_chart(fig2, use_container_width=True)
+        
+        st.markdown("---")
+        
+        # --- CARTE DE RÉPARTITION ---
+        st.subheader("🗺️ Carte de répartition des hauteurs (Déblai / Remblai)")
         
         diff = zi_tn - zi_proj
         
@@ -152,14 +238,13 @@ if st.button("🚀 Lancer le calcul", type="primary", disabled=not (file_tn and 
             'Différence (m)': diff.flatten()
         }).dropna()
 
-        # Carte Plotly (Rouge = Déblai > 0, Vert = Remblai < 0)
-        fig = px.scatter(df_map, x='Est', y='Nord', color='Différence (m)', 
-                         color_continuous_scale='RdYlGn_r', # Rouge vers Vert inversé
-                         title="Visualisation des zones de Déblai (Rouge) et Remblai (Vert)",
-                         labels={'Est': 'Coordonnée Est (m)', 'Nord': 'Coordonnée Nord (m)'})
-        fig.update_traces(marker=dict(size=5, opacity=0.8))
-        fig.update_layout(coloraxis_colorbar=dict(title="Hauteur (m)"))
-        st.plotly_chart(fig, use_container_width=True)
+        fig_map = px.scatter(df_map, x='Est', y='Nord', color='Différence (m)', 
+                             color_continuous_scale='RdYlGn_r',
+                             title="Visualisation des zones de Déblai (Rouge) et Remblai (Vert)",
+                             labels={'Est': 'Coordonnée Est (m)', 'Nord': 'Coordonnée Nord (m)'})
+        fig_map.update_traces(marker=dict(size=5, opacity=0.8))
+        fig_map.update_layout(coloraxis_colorbar=dict(title="Hauteur (m)"))
+        st.plotly_chart(fig_map, use_container_width=True)
 
         # --- EXPORT EXCEL ---
         st.divider()
