@@ -119,6 +119,37 @@ if st.button("🚀 Lancer le calcul", type="primary", disabled=not (file_tn and 
         balance = deblais - remblais
         kpi3.metric("Balance", f"{balance:,.2f} m³", help="Positif = Excédent de déblais, Négatif = Besoin de remblais")
 
+                st.divider()
+        st.subheader("📥 Export des résultats pour rapport")
+        
+        # Création d'un DataFrame récapitulatif propre
+        df_resultat = pd.DataFrame({
+            "Poste": ["Volume de DÉBLAIS", "Volume de REMBLAIS", "Balance (Déblais - Remblais)"],
+            "Volume (m³)": [f"{deblais:,.2f}", f"{remblais:,.2f}", f"{balance:,.2f}"],
+            "Système de coordonnées": [crs_choice, crs_choice, crs_choice],
+            "Méthode de calcul": [methode, methode, methode]
+        })
+        
+        st.dataframe(df_resultat, hide_index=True, use_container_width=True)
+        
+        # Génération du fichier Excel en mémoire
+        import io
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df_resultat.to_excel(writer, index=False, sheet_name='Cubature')
+            # On ajoute aussi un aperçu des données brutes dans un deuxième onglet Excel
+            df_tn.head(100).to_excel(writer, index=False, sheet_name='Apercu_TN')
+            df_proj.head(100).to_excel(writer, index=False, sheet_name='Apercu_Projet')
+        
+        # Bouton de téléchargement
+        st.download_button(
+            label="📥 Télécharger le rapport Excel (.xlsx)",
+            data=output.getvalue(),
+            file_name="Rapport_Cubature_MNT.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+
         st.divider()
         st.subheader("📊 Aperçu des données traitées (5 premières lignes)")
         tab1, tab2 = st.tabs(["Terrain Naturel", "Terrain Projeté"])
