@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 from src.cubature import calculate_cubature_tin, calculate_cubature_grid
 
 # Configuration de la page
@@ -30,23 +31,33 @@ methode = st.sidebar.radio("Méthode de calcul", ("TIN (Maillage triangulé)", "
 resolution = 1.0
 if methode.startswith("Grille"):
     resolution = st.sidebar.slider("Résolution de la grille (mètres)", 0.5, 5.0, 1.0, 0.1)
-    st.sidebar.info(f"La grille sera calculée avec des cellules de {resolution}m x {resolution}m.")
+    st.sidebar.info(f"Grille calculée avec des cellules de {resolution}m x {resolution}m.")
 
-# Fonction pour lire le CSV de manière robuste (gère virgule et point-virgule)
+st.sidebar.header("🌍 Système de coordonnées")
+crs_choice = st.sidebar.selectbox(
+    "Système de vos fichiers d'entrée :",
+    options=[
+        "Lambert-93 (EPSG:2154) - Standard France", 
+        "WGS84 (GPS - Latitude/Longitude)", 
+        "Autre projection métrique (ex: CC, Suisse, etc.)"
+    ]
+)
+
+# Fonction pour lire le CSV de manière robuste
 def lire_csv_robuste(file):
     df = pd.read_csv(file, sep=',')
-    if len(df.columns) == 1: # Si une seule colonne, c'est que le séparateur est mauvais
+    if len(df.columns) == 1: # Si une seule colonne, le séparateur est probablement un point-virgule
         file.seek(0)
         df = pd.read_csv(file, sep=';')
     
     # Nettoyage des noms de colonnes
     df.columns = [c.strip().lower() for c in df.columns]
     
-    # Accepter différentes variantes de noms (Est, X, Nord, Y, Altitude, Z, Elev)
+    # Accepter différentes variantes de noms
     mapping = {
-        'est': 'Est', 'x': 'Est', 'easting': 'Est',
-        'nord': 'Nord', 'y': 'Nord', 'northing': 'Nord',
-        'altitude': 'Altitude', 'z': 'Altitude', 'elev': 'Altitude', 'elevation': 'Altitude'
+        'est': 'Est', 'x': 'Est', 'easting': 'Est', 'longitude': 'Est', 'lon': 'Est',
+        'nord': 'Nord', 'y': 'Nord', 'northing': 'Nord', 'latitude': 'Nord', 'lat': 'Nord',
+        'altitude': 'Altitude', 'z': 'Altitude', 'elev': 'Altitude', 'elevation': 'Altitude', 'h': 'Altitude'
     }
     df.rename(columns=mapping, inplace=True)
     return df
@@ -54,7 +65,7 @@ def lire_csv_robuste(file):
 # Bouton de calcul
 if st.button("🚀 Lancer le calcul", type="primary", disabled=not (file_tn and file_proj)):
     try:
-        with st.spinner("Traitement en cours..."):
+        with st.spinner("Lecture et vérification des coordonnées en cours..."):
             df_tn = lire_csv_robuste(file_tn)
             df_proj = lire_csv_robuste(file_proj)
             
@@ -67,7 +78,32 @@ if st.button("🚀 Lancer le calcul", type="primary", disabled=not (file_tn and 
                 st.error(f"❌ Colonnes introuvables dans le fichier Projet. Attendu: {required}. Trouvé: {list(df_proj.columns)}")
                 st.stop()
 
-            # Calcul
+            # --- GESTION INTELLIGENTE DES SYSTÈMES DE COORDONNÉES ---
+            warnings = []
+            x_mean = abs(df_tn['Est'].mean())
+            y_mean = abs(df_tn['Nord'].mean())
+            
+            if crs_choice.startswith("WGS84"):
+                if x_mean > 1000 or y_mean > 1000:
+                    warnings.append("⚠️ **Conflit détecté** : Vos coordonnées semblent être en mètres (>1000), mais vous avez sélectionné 'WGS84 (degrés)'. Veuillez vérifier votre fichier ou changer le système.")
+                else:
+                    from pyproj import Transformer
+                    # Conversion WGS84 (Lon, Lat) -> Lambert-93 (Est, Nord)
+                    transformer = Transformer.from_crs("EPSG:4326", "EPSG:2154", always_xy=True)
+                    df_tn['Est'], df_tn['Nord'] = transformer.transform(df_tn['Est'].values, df_tn['Nord'].values)
+                    df_proj['Est'], df_proj['Nord'] = transformer.transform(df_proj['Est'].values, df_proj['Nord'].values)
+                    warnings.append("✅ **Conversion réussie** : Coordonnées GPS transformées automatiquement en Lambert-93 (mètres) pour un calcul de volume correct.")
+            
+            elif crs_choice.startswith("Lambert") or crs_choice.startswith("Autre"):
+                if x_mean < 360 and y_mean < 180: 
+                    warnings.append("⚠️ **Conflit détecté** : Vos coordonnées ressemblent à des degrés (ex: 2.35, 48.85), mais vous avez choisi un système métrique. Le calcul de volume sera faux. Vérifiez votre fichier ou sélectionnez 'WGS84'.")
+
+            # Affichage des avertissements avant calcul
+            for w in warnings:
+                st.warning(w)
+
+            # Calcul des volumes
+            st.info("Calcul des volumes en cours...")
             if methode.startswith("TIN"):
                 deblais, remblais = calculate_cubature_tin(df_tn, df_proj)
             else:
@@ -84,10 +120,11 @@ if st.button("🚀 Lancer le calcul", type="primary", disabled=not (file_tn and 
         kpi3.metric("Balance", f"{balance:,.2f} m³", help="Positif = Excédent de déblais, Négatif = Besoin de remblais")
 
         st.divider()
-        st.subheader("📊 Aperçu des données importées")
+        st.subheader("📊 Aperçu des données traitées (5 premières lignes)")
         tab1, tab2 = st.tabs(["Terrain Naturel", "Terrain Projeté"])
-        with tab1: st.dataframe(df_tn.head(10))
-        with tab2: st.dataframe(df_proj.head(10))
+        with tab1: st.dataframe(df_tn.head())
+        with tab2: st.dataframe(df_proj.head())
 
     except Exception as e:
         st.error(f"❌ Une erreur est survenue : {e}")
+        st.info("💡 Vérifiez que vos fichiers sont bien des CSV avec des colonnes Est/X, Nord/Y et Altitude/Z.")
