@@ -6,7 +6,13 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from src.cubature import calculate_cubature_tin, calculate_cubature_grid
+from PIL import Image
+
+from src.cubature import (
+    calculate_cubature_tin,
+    calculate_cubature_grid,
+    compute_difference_grid,
+)
 
 # ----------------------------------------------------------------------------
 # Configuration
@@ -125,6 +131,77 @@ def calculer(df_tn, df_proj, methode, resolution):
     return calculate_cubature_grid(df_tn, df_proj, resolution)
 
 
+@st.cache_data(show_spinner=False)
+def calculer_ecarts(df_tn, df_proj, resolution):
+    return compute_difference_grid(df_tn, df_proj, resolution)
+
+
+def resolution_carte(df_tn, df_proj, methode, resolution):
+    """Pas de la grille de la carte : celui de la grille, sinon ~400 cellules sur le grand côté."""
+    if methode == "grille":
+        return resolution
+    w = min(df_tn["Est"].max(), df_proj["Est"].max()) - max(df_tn["Est"].min(), df_proj["Est"].min())
+    h = min(df_tn["Nord"].max(), df_proj["Nord"].max()) - max(df_tn["Nord"].min(), df_proj["Nord"].min())
+    return max(max(w, h, 1.0) / 400, 0.05)
+
+
+JAUNE = np.array([255, 221, 0], dtype=float)   # déblais
+ROUGE = np.array([220, 30, 30], dtype=float)   # remblais
+NEUTRE = np.array([130, 130, 130], dtype=float)
+FOND = np.array([30, 34, 40], dtype=np.uint8)  # hors données
+
+
+def image_carte(diff: np.ndarray, seuil: float) -> Image.Image:
+    """Image de la carte : jaune = déblais, rouge = remblais, gris = écart négligeable.
+
+    La couleur est plus vive quand l'épaisseur à déblayer/remblayer est grande.
+    Le nord est en haut.
+    """
+    valid = ~np.isnan(diff)
+    absd = np.where(valid, np.abs(diff), 0.0)
+    vmax = np.percentile(absd[valid], 95) if valid.any() else 1.0
+    vmax = max(vmax, 1e-6)
+    inten = 0.55 + 0.45 * np.clip(absd / vmax, 0, 1)  # 0,55 -> 1
+
+    img = np.empty(diff.shape + (3,), dtype=np.uint8)
+    img[:] = FOND
+
+    cut = valid & (diff > seuil)
+    fill = valid & (diff < -seuil)
+    neutre = valid & ~cut & ~fill
+
+    img[cut] = (JAUNE * inten[cut, None]).astype(np.uint8)
+    img[fill] = (ROUGE * inten[fill, None]).astype(np.uint8)
+    img[neutre] = NEUTRE.astype(np.uint8)
+
+    img = img[::-1]  # lignes croissantes en Nord -> nord en haut
+
+    # Sous-échantillonnage si trop grand, agrandissement net si trop petit
+    cote = max(img.shape[:2])
+    if cote > 1200:
+        pas = int(np.ceil(cote / 1200))
+        img = img[::pas, ::pas]
+    pil = Image.fromarray(img)
+    facteur = max(1, int(600 // max(pil.size)))
+    if facteur > 1:
+        pil = pil.resize((pil.width * facteur, pil.height * facteur), Image.NEAREST)
+    return pil
+
+
+def legende_carte(seuil: float):
+    st.markdown(
+        f"""
+        <div style="display:flex;gap:22px;flex-wrap:wrap;font-size:0.9rem">
+          <span><span style="display:inline-block;width:14px;height:14px;background:rgb(255,221,0);border-radius:3px;vertical-align:middle"></span> Déblais (TN au-dessus du projet)</span>
+          <span><span style="display:inline-block;width:14px;height:14px;background:rgb(220,30,30);border-radius:3px;vertical-align:middle"></span> Remblais (TN sous le projet)</span>
+          <span><span style="display:inline-block;width:14px;height:14px;background:rgb(130,130,130);border-radius:3px;vertical-align:middle"></span> Écart &lt; {seuil:.2f} m</span>
+          <span><span style="display:inline-block;width:14px;height:14px;background:rgb(30,34,40);border-radius:3px;vertical-align:middle"></span> Hors données</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def carte_points(df: pd.DataFrame):
     """Nuage de points coloré par altitude (échantillonné si volumineux)."""
     if len(df) > 5000:
@@ -172,6 +249,12 @@ tassement = st.sidebar.number_input(
     help="Réduction de volume des remblais après compactage.",
 )
 prix_m3 = st.sidebar.number_input("Coût de transport (€/m³, optionnel)", 0.0, 500.0, 0.0, 0.5)
+
+st.sidebar.subheader("Carte")
+seuil = st.sidebar.number_input(
+    "Seuil d'écart négligeable (m)", 0.0, 1.0, 0.02, 0.01,
+    help="Les écarts inférieurs à ce seuil apparaissent en gris sur la carte (n'influence pas les volumes).",
+)
 
 # ----------------------------------------------------------------------------
 # En-tête et import
@@ -226,8 +309,14 @@ if st.button("🚀 Lancer le calcul", type="primary", disabled=not pret):
     try:
         with st.spinner("Calcul en cours..."):
             deb, rem = calculer(df_tn, df_proj, methode, resolution)
+            try:
+                res_carte = resolution_carte(df_tn, df_proj, methode, resolution)
+                ecarts = (*calculer_ecarts(df_tn, df_proj, res_carte), res_carte)
+            except Exception as e_carte:
+                ecarts = None
+                st.warning(f"Carte indisponible : {e_carte}")
         st.session_state["resultat"] = {
-            "deblais": float(deb), "remblais": float(rem),
+            "deblais": float(deb), "remblais": float(rem), "ecarts": ecarts,
             "methode": choix, "resolution": resolution,
             "tn": donnees["tn"][0], "proj": donnees["proj"][0],
         }
@@ -267,6 +356,26 @@ if res:
 
     chart_df = pd.DataFrame({"Volume (m³)": [deb, rem]}, index=["Déblais", "Remblais"])
     st.bar_chart(chart_df, height=240)
+
+    ecarts = res.get("ecarts")
+    if ecarts is not None:
+        xi, yi, diff, res_carte = ecarts
+        valid = ~np.isnan(diff)
+        cell = res_carte ** 2
+
+        st.subheader("🗺️ Carte des déblais / remblais")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Surface en déblai", f"{np.count_nonzero(valid & (diff > seuil)) * cell:,.0f} m²".replace(",", " "))
+        m2.metric("Surface en remblai", f"{np.count_nonzero(valid & (diff < -seuil)) * cell:,.0f} m²".replace(",", " "))
+        m3.metric("Déblai max", f"{np.nanmax(diff):.2f} m" if valid.any() else "—")
+        m4.metric("Remblai max", f"{-np.nanmin(diff):.2f} m" if valid.any() else "—")
+
+        st.image(image_carte(diff, seuil), use_container_width=True)
+        legende_carte(seuil)
+        st.caption(
+            f"Est : {xi.min():.1f} → {xi.max():.1f} m · Nord : {yi.min():.1f} → {yi.max():.1f} m · "
+            f"cellules de {res_carte:.2f} m · nord en haut · plus la couleur est vive, plus l'épaisseur est grande."
+        )
 
     rapport = pd.DataFrame(
         {
