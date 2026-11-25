@@ -23,6 +23,8 @@ REQUIRED = ["Est", "Nord", "Altitude"]
 MAPPING = {
     "est": "Est", "x": "Est", "easting": "Est", "e": "Est",
     "nord": "Nord", "y": "Nord", "northing": "Nord", "n": "Nord",
+    "lon": "Est", "long": "Est", "lng": "Est", "longitude": "Est",
+    "lat": "Nord", "latitude": "Nord",
     "altitude": "Altitude", "z": "Altitude", "elev": "Altitude",
     "elevation": "Altitude", "alt": "Altitude", "h": "Altitude",
 }
@@ -35,6 +37,40 @@ st.markdown(
         border: 1px solid rgba(128,128,128,0.25);
         border-radius: 12px;
         padding: 14px 18px;
+    }
+    /* Métriques : texte réduit et retour à la ligne au lieu de la coupure "..." */
+    div[data-testid="stMetricValue"],
+    div[data-testid="stMetricValue"] > div {
+        font-size: 1.35rem !important;
+        white-space: normal !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
+        word-break: break-word;
+    }
+    div[data-testid="stMetricLabel"],
+    div[data-testid="stMetricLabel"] p {
+        white-space: normal !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
+        font-size: 0.85rem !important;
+    }
+    /* Zone d'import : textes et bouton plus petits, sur plusieurs lignes */
+    section[data-testid="stFileUploaderDropzone"],
+    div[data-testid="stFileUploaderDropzone"] {
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 10px 12px;
+    }
+    div[data-testid="stFileUploaderDropzoneInstructions"] span,
+    div[data-testid="stFileUploaderDropzoneInstructions"] small {
+        font-size: 0.8rem !important;
+        white-space: normal !important;
+    }
+    div[data-testid="stFileUploaderDropzone"] button {
+        font-size: 0.8rem !important;
+        white-space: normal !important;
+        height: auto;
+        padding: 4px 10px;
     }
     </style>
     """,
@@ -108,6 +144,32 @@ def lire_points(file) -> tuple[pd.DataFrame, dict]:
     infos = {"lignes": n_brut, "invalides": n_invalides, "doublons": n_doublons,
              "separateur": repr(sep), "decimale": decimal}
     return df, infos
+
+
+def semble_wgs84(df: pd.DataFrame) -> bool:
+    """Heuristique : valeurs dans les bornes lon/lat ET emprise de quelques degrés au plus."""
+    est, nord = df["Est"], df["Nord"]
+    return bool(
+        est.between(-180, 180).all() and nord.between(-90, 90).all()
+        and (est.max() - est.min()) < 5 and (nord.max() - nord.min()) < 5
+    )
+
+
+def epsg_utm(lon: float, lat: float) -> int:
+    """Code EPSG du fuseau UTM (WGS84) contenant le point."""
+    zone = int((lon + 180) // 6) + 1
+    return (32600 if lat >= 0 else 32700) + zone
+
+
+def wgs84_vers_metres(df: pd.DataFrame, epsg_cible: int) -> pd.DataFrame:
+    """Convertit Est=longitude / Nord=latitude (EPSG:4326) vers un CRS projeté en mètres."""
+    from pyproj import Transformer
+
+    tr = Transformer.from_crs(4326, epsg_cible, always_xy=True)
+    x, y = tr.transform(df["Est"].to_numpy(), df["Nord"].to_numpy())
+    out = df.copy()
+    out["Est"], out["Nord"] = x, y
+    return out
 
 
 def emprise(df: pd.DataFrame) -> tuple[float, float, float, float]:
@@ -239,6 +301,23 @@ if methode == "grille":
     resolution = st.sidebar.slider("Résolution de la grille (m)", 0.5, 5.0, 1.0, 0.1)
     st.sidebar.info(f"Cellules de {resolution} m × {resolution} m.")
 
+st.sidebar.subheader("Coordonnées")
+mode_crs = st.sidebar.selectbox(
+    "Système des fichiers",
+    ("Détection automatique", "Projeté (mètres)", "WGS84 lon/lat (EPSG:4326)"),
+    help="Le calcul de volumes exige des mètres : les coordonnées WGS84 (degrés) sont "
+         "converties automatiquement vers une projection métrique.",
+)
+inverser_latlon = st.sidebar.checkbox(
+    "Colonnes en ordre latitude, longitude",
+    help="À cocher si vos fichiers WGS84 sans en-tête sont au format lat, lon, altitude.",
+)
+epsg_saisi = st.sidebar.text_input(
+    "EPSG de sortie (optionnel)", "",
+    help="Vide = fuseau UTM calculé automatiquement. Exemples : 2154 (Lambert-93), "
+         "3812 (Lambert 2008, Belgique), 32631 (UTM 31N).",
+)
+
 st.sidebar.subheader("Coefficients")
 foisonnement = st.sidebar.number_input(
     "Foisonnement des déblais (%)", 0.0, 60.0, 0.0, 1.0,
@@ -264,22 +343,65 @@ st.caption("Importez le terrain naturel et le terrain projeté pour obtenir déb
 
 col1, col2 = st.columns(2)
 donnees = {}
+cols = (("tn", col1, "1. Terrain naturel (TN)"), ("proj", col2, "2. Terrain projeté"))
 
-for col, cle, titre in ((col1, "tn", "1. Terrain naturel (TN)"),
-                        (col2, "proj", "2. Terrain projeté")):
+# Phase 1 : upload et lecture brute
+bruts = {}
+fichiers = {}
+for cle, col, titre in cols:
     with col:
         st.subheader(titre)
-        f = st.file_uploader(f"Fichier {titre}", type=["csv", "txt"], key=cle,
-                             label_visibility="collapsed")
-        if f is not None:
+        fichiers[cle] = st.file_uploader(f"Fichier {titre}", type=["csv", "txt"], key=cle,
+                                         label_visibility="collapsed")
+        if fichiers[cle] is not None:
             try:
-                df, infos = lire_points(f)
-                donnees[cle] = (f.name, df, infos)
-                st.success(f"✅ {f.name}")
-                resume(df, infos)
-                carte_points(df)
+                bruts[cle] = lire_points(fichiers[cle])
             except Exception as e:
-                st.error(f"❌ {f.name} : {e}")
+                st.error(f"❌ {fichiers[cle].name} : {e}")
+
+# Phase 2 : détection WGS84 et conversion vers une projection commune (même CRS pour les 2 fichiers)
+def est_wgs84(df):
+    if mode_crs.startswith("WGS84"):
+        return True
+    if mode_crs.startswith("Projeté"):
+        return False
+    return semble_wgs84(df)
+
+
+epsg_cible = None
+conversions = {c: est_wgs84(b[0]) for c, b in bruts.items()}
+if any(conversions.values()):
+    if inverser_latlon:
+        for c, b in bruts.items():
+            if conversions[c]:
+                b[0].rename(columns={"Est": "Nord", "Nord": "Est"}, inplace=True)
+    if epsg_saisi.strip().isdigit():
+        epsg_cible = int(epsg_saisi.strip())
+    else:
+        ref = bruts["tn"][0] if conversions.get("tn") else next(
+            b[0] for c, b in bruts.items() if conversions[c])
+        epsg_cible = epsg_utm(ref["Est"].mean(), ref["Nord"].mean())
+
+# Phase 3 : affichage
+for cle, col, titre in cols:
+    if cle not in bruts:
+        continue
+    df, infos = bruts[cle]
+    nom = fichiers[cle].name
+    with col:
+        try:
+            if conversions[cle]:
+                df = wgs84_vers_metres(df, epsg_cible)
+                st.success(f"✅ {nom} — WGS84 converti en EPSG:{epsg_cible}")
+            else:
+                st.success(f"✅ {nom}")
+            donnees[cle] = (nom, df, infos)
+            resume(df, infos)
+            carte_points(df)
+        except ImportError:
+            st.error("❌ La conversion WGS84 nécessite la bibliothèque `pyproj` (pip install pyproj).")
+        except Exception as e:
+            st.error(f"❌ {nom} : {e}")
 
 pret = "tn" in donnees and "proj" in donnees
 
