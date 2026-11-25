@@ -10,7 +10,7 @@ from src.cubature import calculate_cubature_tin, calculate_cubature_grid
 # ==========================================
 # 1. 🔒 SYSTÈME D'AUTHENTIFICATION SIMPLE
 # ==========================================
-MOT_DE_PASSE_ATTENDU = "chantier2024"  # <-- CHANGEZ CE MOT DE PASSE ICI
+MOT_DE_PASSE_ATTENDU = ""  # <-- CHANGEZ CE MOT DE PASSE ICI
 
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
@@ -34,7 +34,7 @@ if not st.session_state.authenticated:
 # ==========================================
 st.set_page_config(page_title="Calcul de Cubature MNT", layout="wide", page_icon="🏗️")
 
-st.title("🏗️ Calculateur Professionnel de Cubature MNT")
+st.title("🏗️ Calcul de Cubature MNT")
 
 # --- SECTION FORMAT DES FICHIERS ---
 with st.expander("📋 Format des fichiers CSV attendus (cliquez pour voir)", expanded=False):
