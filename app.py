@@ -81,36 +81,63 @@ st.markdown(
 # ----------------------------------------------------------------------------
 # Lecture et nettoyage des fichiers
 # ----------------------------------------------------------------------------
+def _est_nombre(cellule: str) -> bool:
+    try:
+        float(cellule.strip().strip('"\'').replace(",", "."))
+        return True
+    except ValueError:
+        return False
+
+
+def _nom_colonne(nom) -> str:
+    """Normalise un nom de colonne : minuscules, sans guillemets, sans unité « (m) » / « [m] »."""
+    nom = re.sub(r"[\(\[].*?[\)\]]", "", str(nom))
+    return nom.strip().strip('"\'').strip().lower()
+
+
 def lire_points(file) -> tuple[pd.DataFrame, dict]:
-    """Lit un fichier de points (séparateur et décimale détectés automatiquement).
+    """Lit un fichier de points (séparateur, décimale et en-tête détectés automatiquement).
+
+    L'en-tête est facultatif. S'il est présent, les colonnes sont reconnues par leur nom
+    (Est/X/lon, Nord/Y/lat, Altitude/Z/alt...) ; si les noms ne sont pas reconnus, les 3
+    dernières colonnes sont utilisées (Est, Nord, Altitude).
 
     Retourne le DataFrame nettoyé (Est, Nord, Altitude) et un dict d'infos
     sur le nettoyage (lignes invalides, doublons...).
     """
     raw = file.getvalue().decode("utf-8-sig", errors="replace")
     lignes = [l for l in raw.splitlines() if l.strip()]
+    if lignes and lignes[0].lstrip().startswith("#"):
+        lignes[0] = lignes[0].lstrip().lstrip("#").strip()  # en-tête commenté : « #Est;Nord;Altitude »
+    lignes = [lignes[0]] + [l for l in lignes[1:] if not l.lstrip().startswith("#")] if lignes else lignes
     if len(lignes) < 2:
         raise ValueError("Le fichier est vide ou ne contient qu'une ligne.")
+    raw = "\n".join(lignes)
 
     echantillon = "\n".join(lignes[:20])
-    try:
-        sep = csv.Sniffer().sniff(echantillon, delimiters=";,\t ").delimiter
-    except csv.Error:
-        sep = ";" if echantillon.count(";") > echantillon.count(",") else ","
+    sep = None
+    for cand in (";", "\t"):  # séparateur présent le même nombre de fois sur chaque ligne
+        nb = {l.count(cand) for l in lignes[:20]}
+        if len(nb) == 1 and min(nb) >= 2:
+            sep = cand
+            break
+    if sep is None:
+        try:
+            sep = csv.Sniffer().sniff(echantillon, delimiters=";,\t ").delimiter
+        except csv.Error:
+            sep = ";" if echantillon.count(";") > echantillon.count(",") else ","
 
     # Virgule décimale (ex. "12,5;45,2;101,3")
     decimal = "," if sep != "," and re.search(r"\d,\d", echantillon) else "."
 
-    # Fichier sans en-tête ? (la 1re cellule est un nombre)
-    premiere = lignes[0].split(sep)[0].strip().replace(",", ".")
-    try:
-        float(premiere)
-        sans_entete = True
-    except ValueError:
-        sans_entete = False
-
     sep_regex = r"\s+" if sep == " " else sep
-    if sans_entete:
+
+    # En-tête présent ? Oui si l'une des 3 dernières cellules de la 1re ligne n'est pas un nombre
+    cellules = re.split(sep_regex, lignes[0].strip()) if sep == " " else lignes[0].split(sep)
+    avec_entete = any(not _est_nombre(c) for c in cellules[-3:])
+
+    infos_entete = None
+    if not avec_entete:
         df = pd.read_csv(io.StringIO(raw), sep=sep_regex, decimal=decimal,
                          header=None, engine="python")
         if df.shape[1] < 3:
@@ -119,14 +146,19 @@ def lire_points(file) -> tuple[pd.DataFrame, dict]:
         df.columns = REQUIRED
     else:
         df = pd.read_csv(io.StringIO(raw), sep=sep_regex, decimal=decimal, engine="python")
-        df.columns = [str(c).strip().lower() for c in df.columns]
+        noms = list(df.columns)
+        df.columns = [_nom_colonne(c) for c in df.columns]
         df = df.rename(columns=MAPPING)
-
-    manquantes = [c for c in REQUIRED if c not in df.columns]
-    if manquantes:
-        raise ValueError(
-            f"Colonnes introuvables : {manquantes}. Colonnes trouvées : {list(df.columns)}"
-        )
+        if any(c not in df.columns for c in REQUIRED) or df.columns.duplicated().any():
+            # Noms non reconnus : on retombe sur les 3 dernières colonnes
+            if len(noms) < 3:
+                raise ValueError(
+                    f"Au moins 3 colonnes sont nécessaires (Est, Nord, Altitude). Colonnes trouvées : {noms}"
+                )
+            df = pd.read_csv(io.StringIO(raw), sep=sep_regex, decimal=decimal, engine="python")
+            df = df.iloc[:, -3:]
+            infos_entete = f"En-tête non reconnu ({', '.join(map(str, noms[-3:]))}) : colonnes lues dans l'ordre Est, Nord, Altitude."
+            df.columns = REQUIRED
 
     df = df[REQUIRED].apply(pd.to_numeric, errors="coerce")
     n_brut = len(df)
@@ -142,7 +174,8 @@ def lire_points(file) -> tuple[pd.DataFrame, dict]:
         raise ValueError("Moins de 3 points valides : impossible de calculer un MNT.")
 
     infos = {"lignes": n_brut, "invalides": n_invalides, "doublons": n_doublons,
-             "separateur": repr(sep), "decimale": decimal}
+             "separateur": repr(sep), "decimale": decimal, "entete": avec_entete,
+             "avertissement": infos_entete}
     return df, infos
 
 
@@ -291,6 +324,8 @@ def resume(df: pd.DataFrame, infos: dict):
     c3.metric("Alt. max", f"{df['Altitude'].max():.2f} m")
     c4.metric("Surface", f"{surface(df):,.0f} m²".replace(",", " "),
               help="Aire de l'enveloppe convexe des points.")
+    if infos.get("avertissement"):
+        st.caption(f"ℹ️ {infos['avertissement']}")
     if infos["invalides"] or infos["doublons"]:
         st.caption(
             f"⚠️ {infos['invalides']} ligne(s) invalide(s) ignorée(s), "
@@ -449,7 +484,8 @@ if not pret:
         st.caption("Séparateur `,` `;` tabulation ou espace, virgule ou point décimal : détectés automatiquement. "
                    "Les colonnes sont reconnues par leur nom (Est/X/lon, Nord/Y/lat, Altitude/Z/alt) : "
                    "l'ordre lat, lon fonctionne donc avec un en-tête. "
-                   "Les fichiers sans en-tête sont acceptés (3 dernières colonnes = Est/lon, Nord/lat, Altitude) ; "
+                   "L'en-tête est facultatif (une ligne de titres, éventuellement précédée de #) : s'il n'est pas reconnu, "
+                   "ou s'il n'y en a pas, les 3 dernières colonnes sont lues comme Est/lon, Nord/lat, Altitude ; "
                    "s'ils sont au format lat, lon, altitude, cochez « Colonnes en ordre latitude, longitude » dans la barre latérale.")
 
 # ----------------------------------------------------------------------------
