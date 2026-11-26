@@ -36,12 +36,12 @@ st.markdown(
         background: rgba(128,128,128,0.08);
         border: 1px solid rgba(128,128,128,0.25);
         border-radius: 12px;
-        padding: 14px 18px;
+        padding: 10px 12px;
     }
     /* Métriques : texte réduit et retour à la ligne au lieu de la coupure "..." */
     div[data-testid="stMetricValue"],
     div[data-testid="stMetricValue"] > div {
-        font-size: 1.35rem !important;
+        font-size: 1.1rem !important;
         white-space: normal !important;
         overflow: visible !important;
         text-overflow: clip !important;
@@ -53,7 +53,7 @@ st.markdown(
         white-space: normal !important;
         overflow: visible !important;
         text-overflow: clip !important;
-        font-size: 0.85rem !important;
+        font-size: 0.78rem !important;
     }
     /* Zone d'import : textes et bouton plus petits, sur plusieurs lignes */
     section[data-testid="stFileUploaderDropzone"],
@@ -272,13 +272,24 @@ def carte_points(df: pd.DataFrame):
     st.scatter_chart(df, x="Est", y="Nord", color="Altitude", height=320)
 
 
+def surface(df: pd.DataFrame) -> float:
+    """Surface (m²) de l'enveloppe convexe des points ; emprise rectangulaire à défaut."""
+    try:
+        from scipy.spatial import ConvexHull
+
+        return float(ConvexHull(df[["Est", "Nord"]].to_numpy()).volume)  # en 2D, .volume = aire
+    except Exception:
+        x0, y0, x1, y1 = emprise(df)
+        return float((x1 - x0) * (y1 - y0))
+
+
 def resume(df: pd.DataFrame, infos: dict):
-    x0, y0, x1, y1 = emprise(df)
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4 = st.columns(4, gap="small")
     c1.metric("Points", f"{len(df):,}".replace(",", " "))
     c2.metric("Alt. min", f"{df['Altitude'].min():.2f} m")
     c3.metric("Alt. max", f"{df['Altitude'].max():.2f} m")
-    c4.metric("Emprise", f"{x1 - x0:.0f} × {y1 - y0:.0f} m")
+    c4.metric("Surface", f"{surface(df):,.0f} m²".replace(",", " "),
+              help="Aire de l'enveloppe convexe des points.")
     if infos["invalides"] or infos["doublons"]:
         st.caption(
             f"⚠️ {infos['invalides']} ligne(s) invalide(s) ignorée(s), "
@@ -410,6 +421,16 @@ for cle, col, titre in cols:
                 st.success(f"✅ {nom}")
             donnees[cle] = (nom, df, infos)
             resume(df, infos)
+            st.dataframe(
+                df[REQUIRED],
+                use_container_width=True,
+                height=250,
+                column_config={
+                    "Est": st.column_config.NumberColumn("Est", format="%.3f"),
+                    "Nord": st.column_config.NumberColumn("Nord", format="%.3f"),
+                    "Altitude": st.column_config.NumberColumn("Altitude", format="%.2f"),
+                },
+            )
             carte_points(df)
         except ImportError:
             st.error("❌ La conversion WGS84 nécessite la bibliothèque `pyproj` (pip install pyproj).")
@@ -420,9 +441,16 @@ pret = "tn" in donnees and "proj" in donnees
 
 if not pret:
     with st.expander("Format attendu"):
+        st.markdown("**Coordonnées projetées (mètres)**")
         st.code("Est;Nord;Altitude\n651234,50;6861234,25;102,35\n651235,50;6861234,25;102,41", language="text")
+        st.markdown("**Coordonnées WGS84 (degrés)**")
+        st.code("lon;lat;alt\n2,352200;48,856600;35,20\n2,352210;48,856600;35,26", language="text")
+        st.code("lat;lon;alt\n48,856600;2,352200;35,20\n48,856600;2,352210;35,26", language="text")
         st.caption("Séparateur `,` `;` tabulation ou espace, virgule ou point décimal : détectés automatiquement. "
-                   "Les fichiers sans en-tête sont acceptés (3 dernières colonnes = Est, Nord, Altitude).")
+                   "Les colonnes sont reconnues par leur nom (Est/X/lon, Nord/Y/lat, Altitude/Z/alt) : "
+                   "l'ordre lat, lon fonctionne donc avec un en-tête. "
+                   "Les fichiers sans en-tête sont acceptés (3 dernières colonnes = Est/lon, Nord/lat, Altitude) ; "
+                   "s'ils sont au format lat, lon, altitude, cochez « Colonnes en ordre latitude, longitude » dans la barre latérale.")
 
 # ----------------------------------------------------------------------------
 # Contrôles de cohérence
