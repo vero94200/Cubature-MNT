@@ -693,8 +693,11 @@ if epsg_cible is None:  # fichiers déjà en mètres : la projection choisie est
 with bloc_verif:
     st.markdown("**📍 Vérifier l'emplacement sur carte**")
     if not bruts:
-        st.write("Importez un fichier : les liens Google Maps, Plans et Google Earth s'afficheront ici, "
-                 "pour chaque système de coordonnées plausible.")
+        st.markdown("Importez un fichier : les liens "
+                    "[Google Maps](https://www.google.com/maps), "
+                    "[Plans](https://maps.apple.com/) et "
+                    "[Google Earth](https://earth.google.com/web/) s'afficheront ici, "
+                    "pour chaque système de coordonnées plausible.")
     for cle, _, _titre in cols:
         if cle not in bruts:
             continue
