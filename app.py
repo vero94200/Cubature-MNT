@@ -440,13 +440,33 @@ def surface(df: pd.DataFrame) -> float:
         return float((x1 - x0) * (y1 - y0))
 
 
+@st.cache_data(show_spinner=False)
+def surface_3d(df: pd.DataFrame) -> float:
+    """Surface développée (m²) du maillage triangulé en (X, Y, Z) : somme des aires des triangles 3D."""
+    try:
+        from scipy.spatial import Delaunay
+
+        p = df[["Est", "Nord", "Altitude"]].to_numpy(dtype=float)
+        tri = Delaunay(p[:, :2]).simplices
+        a, b, c = p[tri[:, 0]], p[tri[:, 1]], p[tri[:, 2]]
+        return float(0.5 * np.linalg.norm(np.cross(b - a, c - a), axis=1).sum())
+    except Exception:
+        return float("nan")
+
+
 def resume(df: pd.DataFrame, infos: dict):
-    c1, c2, c3, c4 = st.columns(4, gap="small")
+    c1, c2, c3 = st.columns(3, gap="small")
     c1.metric("Points", f"{len(df):,}".replace(",", " "))
     c2.metric("Alt. min", f"{df['Altitude'].min():.2f} m")
     c3.metric("Alt. max", f"{df['Altitude'].max():.2f} m")
-    c4.metric("Surface", f"{surface(df):,.0f} m²".replace(",", " "),
-              help="Aire de l'enveloppe convexe des points.")
+    s2d, s3d = surface(df), surface_3d(df)
+    d1, d2 = st.columns(2, gap="small")
+    d1.metric("Surface XY", f"{s2d:,.0f} m²".replace(",", " "),
+              help="Surface en plan formée par les points (X, Y) : aire de l'enveloppe convexe, "
+                   "égale à celle du maillage triangulé vu du dessus.")
+    d2.metric("Surface XYZ", "—" if np.isnan(s3d) else f"{s3d:,.0f} m²".replace(",", " "),
+              help="Surface développée formée par les points (X, Y, Z) : somme des aires des triangles "
+                   "du maillage en tenant compte des altitudes (toujours ≥ surface XY).")
     if infos.get("alt_nulle"):
         st.caption("⚠️ Aucune altitude (ou toutes à 0) dans le KML : utilisez l'option « Altitudes » "
                    "sous le fichier (valeur constante ou saisie manuelle).")
