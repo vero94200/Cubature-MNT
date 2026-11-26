@@ -514,6 +514,8 @@ if choix_proj.startswith("Autre"):
         help="Exemples : 2154 (Lambert-93), 3947 (CC47), 3812 (Lambert 2008, Belgique), 32633 (UTM 33N).",
     )
 
+bloc_transfo = st.sidebar.container()  # rempli plus bas (transformation Lambert-93 ⇄ CC)
+
 st.sidebar.subheader("Coefficients")
 foisonnement = st.sidebar.number_input(
     "Foisonnement des déblais (%)", 0.0, 60.0, 0.0, 1.0,
@@ -537,7 +539,7 @@ seuil = st.sidebar.number_input(
 st.title("🏗️ Calcul de Cubature MNT")
 st.caption("Importez le terrain naturel et le terrain projeté pour obtenir déblais, remblais et balance.")
 
-with st.expander("🔄 Transformation Lambert-93 ⇄ Conique conforme (CC42 à CC50)"):
+with bloc_transfo.expander("🔄 Transformation Lambert-93 ⇄ Conique conforme (CC42 à CC50)"):
     sens = st.radio("Sens de la transformation", ("Lambert-93 → CC", "CC → Lambert-93"),
                     horizontal=True, key="tr_sens")
     zone_cc = st.selectbox("Zone Conique conforme", list(ZONES_CC), index=5, key="tr_zone",
@@ -691,13 +693,10 @@ if epsg_cible is None:  # fichiers déjà en mètres : la projection choisie est
 # Vérification de l'emplacement en amont : indépendante du choix ci-dessous (on teste les systèmes
 # plausibles), pour voir sur carte où tombent les fichiers AVANT de choisir le système de coordonnées
 with bloc_verif:
-    st.markdown("**📍 Vérifier l'emplacement sur carte**")
     if not bruts:
-        st.markdown("Importez un fichier : les liens "
-                    "[Google Maps](https://www.google.com/maps), "
+        st.markdown("[Google Maps](https://www.google.com/maps), "
                     "[Plans](https://maps.apple.com/) et "
-                    "[Google Earth](https://earth.google.com/web/) s'afficheront ici, "
-                    "pour chaque système de coordonnées plausible.")
+                    "[Google Earth](https://earth.google.com/web/)")
     for cle, _, _titre in cols:
         if cle not in bruts:
             continue
@@ -720,11 +719,16 @@ for cle, col, titre in cols:
     nom = fichiers[cle].name
     with col:
         try:
+            origine = "détecté" if mode_crs.startswith("Détection") else "choisi"
             if conversions[cle]:
                 df = wgs84_vers_metres(df, epsg_cible)
-                st.success(f"✅ {nom} — WGS84 converti en EPSG:{epsg_cible}")
+                st.success(f"✅ {nom}\n\n"
+                           f"Système {origine} : WGS84 lon/lat (EPSG:4326) → "
+                           f"converti en mètres : EPSG:{epsg_cible}")
             else:
-                st.success(f"✅ {nom}")
+                src = f"EPSG:{epsg_cible}" if epsg_cible else "projection non précisée"
+                st.success(f"✅ {nom}\n\n"
+                           f"Système {origine} : mètres ({src}) → utilisé tel quel, sans conversion")
             donnees[cle] = (nom, df, infos)
             resume(df, infos)
             st.dataframe(
