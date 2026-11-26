@@ -824,6 +824,16 @@ if res:
               delta_color="off",
               help="Déblais foisonnés − remblais tassés")
 
+    # Surface réellement utilisée pour le calcul : zone commune au TN et au projet
+    # (cellules où l'écart TN − projet est défini), pas la surface de chaque fichier.
+    surface_calcul = None
+    if res.get("ecarts") is not None:
+        _, _, diff_s, pas_s = res["ecarts"]
+        surface_calcul = float(np.count_nonzero(~np.isnan(diff_s)) * pas_s ** 2)
+        st.metric("Surface de calcul", f"{surface_calcul:,.0f} m²".replace(",", " "),
+                  help="Zone commune au TN et au projet, sur laquelle les déblais et remblais sont calculés "
+                       "(intersection des deux surfaces, estimée sur la grille de la carte).")
+
     if foisonnement or tassement:
         c1, c2 = st.columns(2)
         c1.metric("Déblais foisonnés", f"{deb_f:,.2f} m³".replace(",", " "))
@@ -864,11 +874,13 @@ if res:
         {
             "Paramètre": ["Fichier TN", "Fichier projet", "Méthode", "Résolution (m)",
                           "Déblais (m³)", "Remblais (m³)", "Foisonnement (%)", "Tassement (%)",
-                          "Déblais foisonnés (m³)", "Remblais à approvisionner (m³)", "Balance (m³)"],
+                          "Déblais foisonnés (m³)", "Remblais à approvisionner (m³)", "Balance (m³)",
+                          "Surface de calcul (m²)"],
             "Valeur": [res["tn"], res["proj"], res["methode"],
                        res["resolution"] if res["methode"].startswith("Grille") else "—",
                        round(deb, 2), round(rem, 2), foisonnement, tassement,
-                       round(deb_f, 2), round(rem_t, 2), round(balance, 2)],
+                       round(deb_f, 2), round(rem_t, 2), round(balance, 2),
+                       round(surface_calcul) if surface_calcul is not None else "—"],
         }
     )
     st.download_button(
