@@ -164,7 +164,8 @@ def lire_points(file) -> tuple[pd.DataFrame, dict]:
             df.columns = REQUIRED
 
     return _finaliser(df, {"separateur": repr(sep), "decimale": decimal, "entete": avec_entete,
-                           "avertissement": infos_entete, "kml": False, "alt_nulle": False})
+                           "avertissement": infos_entete, "kml": False, "alt_nulle": False,
+                           "entete_reconnu": avec_entete and infos_entete is None})
 
 
 def _finaliser(df: pd.DataFrame, extra: dict) -> tuple[pd.DataFrame, dict]:
@@ -397,31 +398,42 @@ if methode == "grille":
     resolution = st.sidebar.slider("Résolution de la grille (m)", 0.5, 5.0, 1.0, 0.1)
     st.sidebar.info(f"Cellules de {resolution} m × {resolution} m.")
 
-st.sidebar.subheader("Coordonnées")
+st.sidebar.subheader("Système de coordonnées")
 mode_crs = st.sidebar.selectbox(
-    "Système des fichiers",
-    ("Détection automatique", "Projeté (mètres)", "WGS84 lon/lat (EPSG:4326)"),
+    "Coordonnées de vos fichiers",
+    ("Détection automatique", "Projeté en mètres (Lambert-93, CC47, UTM…)",
+     "WGS84 lon/lat (EPSG:4326)"),
     index=2,  # défaut : WGS84 lon/lat (EPSG:4326)
-    help="Le calcul de volumes exige des mètres : les coordonnées WGS84 (degrés) sont "
-         "converties automatiquement vers une projection métrique.",
+    help="Dans quel système sont exprimées les coordonnées de vos fichiers TN et projet. "
+         "Le calcul de volumes exige des mètres : les coordonnées WGS84 (degrés) sont "
+         "converties automatiquement vers la projection choisie ci-dessous. "
+         "Des fichiers déjà en Lambert-93, CC47 ou UTM sont utilisés tels quels.",
 )
 inverser_latlon = st.sidebar.checkbox(
     "Colonnes en ordre latitude, longitude",
-    help="À cocher si vos fichiers WGS84 sans en-tête sont au format lat, lon, altitude.",
+    disabled=mode_crs.startswith("Projeté"),
+    help="À cocher si vos fichiers WGS84 sans en-tête (ou à en-tête non reconnu) sont au format "
+         "lat, lon, altitude. Sans effet sur les KML et sur les fichiers dont l'en-tête est reconnu.",
 )
 choix_proj = st.sidebar.selectbox(
-    "Projection de sortie (WGS84 → mètres)",
-    ("UTM automatique", "UTM 30N (EPSG:32630)", "UTM 31N (EPSG:32631)",
+    "Projection de calcul (conversion depuis WGS84)",
+    ("UTM automatique",
+     "Lambert-93 (EPSG:2154)",
+     "CC47 – RGF93 / Conique conforme zone 7 (EPSG:3947)",
+     "UTM 30N (EPSG:32630)", "UTM 31N (EPSG:32631)",
      "UTM 32N (EPSG:32632)", "Autre code EPSG…"),
-    index=1,  # défaut : UTM 30N (EPSG:32630)
-    help="Automatique : fuseau UTM calculé depuis le centre du fichier TN. "
-         "Choisissez 30, 31 ou 32 pour l'imposer (utile près d'une limite de fuseau).",
+    index=3,  # défaut : UTM 30N (EPSG:32630)
+    disabled=mode_crs.startswith("Projeté"),
+    help="Projection métrique dans laquelle les points WGS84 sont convertis (sans objet si vos "
+         "fichiers sont déjà en mètres). Lambert-93 : France entière. CC47 : bandes CC (zone 47°N, "
+         "ex. Vendée) pour limiter la déformation. UTM automatique : fuseau calculé depuis le "
+         "centre du fichier TN.",
 )
 epsg_saisi = ""
 if choix_proj.startswith("Autre"):
     epsg_saisi = st.sidebar.text_input(
         "Code EPSG", "",
-        help="Exemples : 2154 (Lambert-93), 3812 (Lambert 2008, Belgique), 32633 (UTM 33N).",
+        help="Exemples : 2154 (Lambert-93), 3947 (CC47), 3812 (Lambert 2008, Belgique), 32633 (UTM 33N).",
     )
 
 st.sidebar.subheader("Coefficients")
@@ -517,7 +529,8 @@ conversions = {c: est_wgs84(b[0], b[1]) for c, b in bruts.items()}
 if any(conversions.values()):
     if inverser_latlon:
         for c, b in bruts.items():
-            if conversions[c] and not b[1].get("kml"):  # un KML est toujours lon, lat
+            # Un KML est toujours lon, lat ; un en-tête reconnu fixe déjà l'ordre des colonnes
+            if conversions[c] and not b[1].get("kml") and not b[1].get("entete_reconnu"):
                 b[0].rename(columns={"Est": "Nord", "Nord": "Est"}, inplace=True)
     if "EPSG:" in choix_proj:
         epsg_cible = int(choix_proj.split("EPSG:")[1].rstrip(")"))
