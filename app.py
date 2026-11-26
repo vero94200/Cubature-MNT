@@ -306,6 +306,7 @@ st.sidebar.subheader("Coordonnées")
 mode_crs = st.sidebar.selectbox(
     "Système des fichiers",
     ("Détection automatique", "Projeté (mètres)", "WGS84 lon/lat (EPSG:4326)"),
+    index=2,  # défaut : WGS84 lon/lat (EPSG:4326)
     help="Le calcul de volumes exige des mètres : les coordonnées WGS84 (degrés) sont "
          "converties automatiquement vers une projection métrique.",
 )
@@ -317,6 +318,7 @@ choix_proj = st.sidebar.selectbox(
     "Projection de sortie (WGS84 → mètres)",
     ("UTM automatique", "UTM 30N (EPSG:32630)", "UTM 31N (EPSG:32631)",
      "UTM 32N (EPSG:32632)", "Autre code EPSG…"),
+    index=1,  # défaut : UTM 30N (EPSG:32630)
     help="Automatique : fuseau UTM calculé depuis le centre du fichier TN. "
          "Choisissez 30, 31 ou 32 pour l'imposer (utile près d'une limite de fuseau).",
 )
@@ -347,7 +349,7 @@ seuil = st.sidebar.number_input(
 # ----------------------------------------------------------------------------
 # En-tête et import
 # ----------------------------------------------------------------------------
-st.title("🏗️ Calculateur de Cubature MNT")
+st.title("🏗️ Calcul de Cubature MNT")
 st.caption("Importez le terrain naturel et le terrain projeté pour obtenir déblais, remblais et balance.")
 
 col1, col2 = st.columns(2)
@@ -417,7 +419,6 @@ for cle, col, titre in cols:
 pret = "tn" in donnees and "proj" in donnees
 
 if not pret:
-    st.info("📂 Chargez les deux fichiers (colonnes Est/X, Nord/Y, Altitude/Z) pour activer le calcul.")
     with st.expander("Format attendu"):
         st.code("Est;Nord;Altitude\n651234,50;6861234,25;102,35\n651235,50;6861234,25;102,41", language="text")
         st.caption("Séparateur `,` `;` tabulation ou espace, virgule ou point décimal : détectés automatiquement. "
