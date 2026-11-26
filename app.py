@@ -286,12 +286,44 @@ def liens_carte(lat: float, lon: float, libelle: str) -> str:
     return f"[Google Maps]({gmaps}) · [Plans]({apple}) · [Google Earth]({earth})"
 
 
-def afficher_liens(libelle: str, centre) -> None:
+def en_france(centre) -> bool:
+    """Position plausible en France métropolitaine (zone large, Corse comprise)."""
+    return bool(centre) and 41 <= centre[0] <= 52 and -6 <= centre[1] <= 10
+
+
+def candidats_position(df: pd.DataFrame, wgs84_probable: bool, epsg_choisi) -> list:
+    """Interprétations plausibles de la position d'un fichier, indépendamment du choix des coordonnées.
+
+    Retourne une liste de (libellé du système supposé, (lat, lon)). Pour des coordonnées en mètres,
+    on essaie Lambert-93 et les zones CC42 à CC50 et on ne garde que les positions en France ;
+    la projection actuellement choisie est toujours proposée en premier si elle donne un point valide."""
+    cands = []
+    if wgs84_probable:
+        c = centre_wgs84(df, 4326)
+        if c:
+            cands.append(("WGS84 lon, lat", c))
+        inv = centre_wgs84(df.rename(columns={"Est": "Nord", "Nord": "Est"}), 4326)
+        if en_france(inv) and not en_france(c):
+            cands.insert(0, ("WGS84 lat, lon (colonnes inversées)", inv))
+        return cands
+    essais = ([("Lambert-93", 2154)] + [(n.split(" ")[0], e) for n, e in ZONES_CC.items()]
+              + [("UTM 30N", 32630), ("UTM 31N", 32631), ("UTM 32N", 32632)])
+    if epsg_choisi and epsg_choisi not in [e for _, e in essais]:
+        essais.append((f"EPSG:{epsg_choisi}", epsg_choisi))
+    for lib, e in essais:
+        c = centre_wgs84(df, e)
+        if c and (en_france(c) or e == epsg_choisi):
+            cands.append((lib + (" · choix actuel" if e == epsg_choisi else ""), c))
+    cands.sort(key=lambda t: "choix actuel" not in t[0])
+    return cands
+
+
+def afficher_liens(libelle: str, centre, detail: str = "") -> None:
     if centre is None:
         st.markdown(f"**{libelle}** : position non calculable — vérifiez le système de coordonnées.")
     else:
         lat, lon = centre
-        st.markdown(f"**{libelle}**")
+        st.markdown(f"**{libelle}**" + (f" — {detail}" if detail else ""))
         st.code(f"{lat:.6f}, {lon:.6f}", language=None)  # copiable (bouton de copie), collable dans Google Maps
         st.markdown(liens_carte(lat, lon, libelle))
 
@@ -656,16 +688,26 @@ if epsg_cible is None:  # fichiers déjà en mètres : la projection choisie est
     elif epsg_saisi.strip().isdigit():
         epsg_cible = int(epsg_saisi.strip())
 
-# Vérification de l'emplacement en amont (liens carte selon le système de coordonnées choisi)
+# Vérification de l'emplacement en amont : indépendante du choix ci-dessous (on teste les systèmes
+# plausibles), pour voir sur carte où tombent les fichiers AVANT de choisir le système de coordonnées
 with bloc_verif:
-    st.markdown("**📍 Vérifier l'emplacement**")
+    st.markdown("**📍 Vérifier l'emplacement sur carte**")
     if not bruts:
-        st.caption("Importez un fichier pour afficher les liens Google Maps, Plans et Google Earth.")
+        st.write("Importez un fichier : les liens Google Maps, Plans et Google Earth s'afficheront ici, "
+                 "pour chaque système de coordonnées plausible.")
     for cle, _, _titre in cols:
-        if cle in bruts:
-            src = 4326 if conversions[cle] else epsg_cible
-            afficher_liens("TN" if cle == "tn" else "Projet", centre_wgs84(bruts[cle][0], src))
-    st.caption("Si le point n'est pas au bon endroit, changez le système ou la projection ci-dessous.")
+        if cle not in bruts:
+            continue
+        df_b, infos_b = bruts[cle]
+        nom_c = "TN" if cle == "tn" else "Projet"
+        wgs_probable = bool(infos_b.get("kml")) or semble_wgs84(df_b)
+        cands = candidats_position(df_b, wgs_probable, None if wgs_probable else epsg_cible)
+        if not cands:
+            st.markdown(f"**{nom_c}** : aucune position plausible trouvée — vérifiez le format du fichier.")
+        for lib, centre in cands:
+            afficher_liens(nom_c, centre, lib)
+    if bruts:
+        st.write("Choisissez ensuite le système de coordonnées correspondant au bon emplacement.")
 
 # Phase 3 : affichage
 for cle, col, titre in cols:
