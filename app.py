@@ -96,7 +96,7 @@ def _nom_colonne(nom) -> str:
 
 
 def lire_points(file) -> tuple[pd.DataFrame, dict]:
-    """Lit un fichier de points (séparateur, décimale et en-tête détectés automatiquement).
+    """Lit un fichier de points CSV/TXT (séparateur, décimale et en-tête détectés automatiquement) ou KML.
 
     L'en-tête est facultatif. S'il est présent, les colonnes sont reconnues par leur nom
     (Est/X/lon, Nord/Y/lat, Altitude/Z/alt...) ; si les noms ne sont pas reconnus, les 3
@@ -105,6 +105,9 @@ def lire_points(file) -> tuple[pd.DataFrame, dict]:
     Retourne le DataFrame nettoyé (Est, Nord, Altitude) et un dict d'infos
     sur le nettoyage (lignes invalides, doublons...).
     """
+    if file.name.lower().endswith(".kml"):
+        return lire_kml(file)
+
     raw = file.getvalue().decode("utf-8-sig", errors="replace")
     lignes = [l for l in raw.splitlines() if l.strip()]
     if lignes and lignes[0].lstrip().startswith("#"):
@@ -160,6 +163,12 @@ def lire_points(file) -> tuple[pd.DataFrame, dict]:
             infos_entete = f"En-tête non reconnu ({', '.join(map(str, noms[-3:]))}) : colonnes lues dans l'ordre Est, Nord, Altitude."
             df.columns = REQUIRED
 
+    return _finaliser(df, {"separateur": repr(sep), "decimale": decimal, "entete": avec_entete,
+                           "avertissement": infos_entete, "kml": False, "alt_nulle": False})
+
+
+def _finaliser(df: pd.DataFrame, extra: dict) -> tuple[pd.DataFrame, dict]:
+    """Nettoyage commun (valeurs invalides, doublons XY) + dict d'infos."""
     df = df[REQUIRED].apply(pd.to_numeric, errors="coerce")
     n_brut = len(df)
     df = df.dropna()
@@ -173,10 +182,46 @@ def lire_points(file) -> tuple[pd.DataFrame, dict]:
     if len(df) < 3:
         raise ValueError("Moins de 3 points valides : impossible de calculer un MNT.")
 
-    infos = {"lignes": n_brut, "invalides": n_invalides, "doublons": n_doublons,
-             "separateur": repr(sep), "decimale": decimal, "entete": avec_entete,
-             "avertissement": infos_entete}
+    infos = {"lignes": n_brut, "invalides": n_invalides, "doublons": n_doublons, **extra}
     return df, infos
+
+
+def lire_kml(file) -> tuple[pd.DataFrame, dict]:
+    """Lit un fichier KML : tous les points, sommets de lignes et de polygones.
+
+    Le KML est toujours en WGS84 (longitude, latitude, altitude). Sans altitude, elle vaut 0.
+    """
+    import xml.etree.ElementTree as ET
+
+    try:
+        racine = ET.fromstring(file.getvalue())
+    except ET.ParseError as e:
+        raise ValueError(f"Fichier KML invalide : {e}")
+
+    pts = []
+    for el in racine.iter():
+        balise = el.tag.split("}")[-1]
+        if not el.text:
+            continue
+        if balise == "coordinates":        # "lon,lat[,alt] lon,lat[,alt] ..."
+            triplets = [t.split(",") for t in el.text.split()]
+        elif balise == "coord":            # gx:coord : "lon lat [alt]"
+            triplets = [el.text.split()]
+        else:
+            continue
+        for v in triplets:
+            if len(v) >= 2:
+                try:
+                    pts.append((float(v[0]), float(v[1]), float(v[2]) if len(v) >= 3 else 0.0))
+                except ValueError:
+                    pass
+
+    if not pts:
+        raise ValueError("Aucune coordonnée trouvée dans le fichier KML.")
+    df = pd.DataFrame(pts, columns=REQUIRED)
+    return _finaliser(df, {"separateur": "—", "decimale": ".", "entete": False,
+                           "avertissement": None, "kml": True,
+                           "alt_nulle": bool((df["Altitude"] == 0).all())})
 
 
 def semble_wgs84(df: pd.DataFrame) -> bool:
@@ -324,6 +369,9 @@ def resume(df: pd.DataFrame, infos: dict):
     c3.metric("Alt. max", f"{df['Altitude'].max():.2f} m")
     c4.metric("Surface", f"{surface(df):,.0f} m²".replace(",", " "),
               help="Aire de l'enveloppe convexe des points.")
+    if infos.get("alt_nulle"):
+        st.caption("⚠️ Aucune altitude (ou toutes à 0) dans le KML : utilisez l'option « Altitudes » "
+                   "sous le fichier (valeur constante ou saisie manuelle).")
     if infos.get("avertissement"):
         st.caption(f"ℹ️ {infos['avertissement']}")
     if infos["invalides"] or infos["doublons"]:
@@ -403,22 +451,60 @@ col1, col2 = st.columns(2)
 donnees = {}
 cols = (("tn", col1, "1. Terrain naturel (TN)"), ("proj", col2, "2. Terrain projeté"))
 
-# Phase 1 : upload et lecture brute
+# Phase 1 : upload, choix de l'origine des altitudes et lecture brute
+MAX_EDITION = 5000  # au-delà, la saisie manuelle point par point n'est plus proposée
 bruts = {}
 fichiers = {}
 for cle, col, titre in cols:
     with col:
         st.subheader(titre)
-        fichiers[cle] = st.file_uploader(f"Fichier {titre}", type=["csv", "txt"], key=cle,
+        fichiers[cle] = st.file_uploader(f"Fichier {titre}", type=["csv", "txt", "kml"], key=cle,
                                          label_visibility="collapsed")
+        mode_alt = st.radio(
+            "Altitudes", ("Du fichier", "Valeur constante", "Saisie manuelle"),
+            key=f"altmode_{cle}", horizontal=True,
+            help="Du fichier : altitudes lues telles quelles. Valeur constante : une même altitude pour tous "
+                 "les points (plateforme plane, KML sans altitude). Saisie manuelle : modifier les altitudes "
+                 "point par point dans un tableau.",
+        )
+        valeur_alt = 0.0
+        if mode_alt == "Valeur constante":
+            valeur_alt = st.number_input("Altitude appliquée à tous les points (m)", value=0.0,
+                                         step=0.1, format="%.2f", key=f"altval_{cle}")
         if fichiers[cle] is not None:
             try:
-                bruts[cle] = lire_points(fichiers[cle])
+                df0, infos0 = lire_points(fichiers[cle])
+                if mode_alt == "Valeur constante":
+                    df0 = df0.assign(Altitude=float(valeur_alt))
+                    infos0 = {**infos0, "alt_nulle": False}
+                elif mode_alt == "Saisie manuelle":
+                    if len(df0) > MAX_EDITION:
+                        st.warning(f"Saisie manuelle limitée à {MAX_EDITION} points "
+                                   f"(fichier : {len(df0)}). Altitudes du fichier conservées.")
+                    else:
+                        with st.expander("Saisir / modifier les altitudes", expanded=True):
+                            edite = st.data_editor(
+                                df0[REQUIRED], use_container_width=True, height=250,
+                                disabled=["Est", "Nord"], num_rows="fixed",
+                                key=f"ed_{cle}_{fichiers[cle].name}_{fichiers[cle].size}",
+                                column_config={
+                                    "Est": st.column_config.NumberColumn("Est", format="%.6f"),
+                                    "Nord": st.column_config.NumberColumn("Nord", format="%.6f"),
+                                    "Altitude": st.column_config.NumberColumn("Altitude (m)", format="%.2f"),
+                                },
+                            )
+                        df0 = edite.dropna(subset=["Altitude"])
+                        if len(df0) < 3:
+                            raise ValueError("Moins de 3 points avec une altitude : impossible de calculer un MNT.")
+                        infos0 = {**infos0, "alt_nulle": False}
+                bruts[cle] = (df0, infos0)
             except Exception as e:
                 st.error(f"❌ {fichiers[cle].name} : {e}")
 
 # Phase 2 : détection WGS84 et conversion vers une projection commune (même CRS pour les 2 fichiers)
-def est_wgs84(df):
+def est_wgs84(df, infos):
+    if infos.get("kml"):
+        return True  # un KML est toujours en WGS84
     if mode_crs.startswith("WGS84"):
         return True
     if mode_crs.startswith("Projeté"):
@@ -427,11 +513,11 @@ def est_wgs84(df):
 
 
 epsg_cible = None
-conversions = {c: est_wgs84(b[0]) for c, b in bruts.items()}
+conversions = {c: est_wgs84(b[0], b[1]) for c, b in bruts.items()}
 if any(conversions.values()):
     if inverser_latlon:
         for c, b in bruts.items():
-            if conversions[c]:
+            if conversions[c] and not b[1].get("kml"):  # un KML est toujours lon, lat
                 b[0].rename(columns={"Est": "Nord", "Nord": "Est"}, inplace=True)
     if "EPSG:" in choix_proj:
         epsg_cible = int(choix_proj.split("EPSG:")[1].rstrip(")"))
@@ -481,6 +567,9 @@ if not pret:
         st.markdown("**Coordonnées WGS84 (degrés)**")
         st.code("lon;lat;alt\n2,352200;48,856600;35,20\n2,352210;48,856600;35,26", language="text")
         st.code("lat;lon;alt\n48,856600;2,352200;35,20\n48,856600;2,352210;35,26", language="text")
+        st.caption("Les fichiers KML (points, lignes ou polygones) sont aussi acceptés : toujours en WGS84 "
+                   "lon, lat, altitude ; sans altitude, elle vaut 0 → utilisez l'option « Altitudes » "
+                   "(valeur constante ou saisie manuelle).")
         st.caption("Séparateur `,` `;` tabulation ou espace, virgule ou point décimal : détectés automatiquement. "
                    "Les colonnes sont reconnues par leur nom (Est/X/lon, Nord/Y/lat, Altitude/Z/alt) : "
                    "l'ordre lat, lon fonctionne donc avec un en-tête. "
