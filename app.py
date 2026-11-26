@@ -20,6 +20,8 @@ from src.cubature import (
 st.set_page_config(page_title="Cubature MNT", layout="wide", page_icon="🏗️")
 
 REQUIRED = ["Est", "Nord", "Altitude"]
+# Zones Conique Conforme (RGF93 / CC42 à CC50 = EPSG:3942 à 3950)
+ZONES_CC = {f"CC{z} (EPSG:{3900 + z})": 3900 + z for z in range(42, 51)}
 MAPPING = {
     "est": "Est", "x": "Est", "easting": "Est", "e": "Est",
     "nord": "Nord", "y": "Nord", "northing": "Nord", "n": "Nord",
@@ -241,15 +243,20 @@ def epsg_utm(lon: float, lat: float) -> int:
     return (32600 if lat >= 0 else 32700) + zone
 
 
-def wgs84_vers_metres(df: pd.DataFrame, epsg_cible: int) -> pd.DataFrame:
-    """Convertit Est=longitude / Nord=latitude (EPSG:4326) vers un CRS projeté en mètres."""
+def transformer_points(df: pd.DataFrame, epsg_source: int, epsg_cible: int) -> pd.DataFrame:
+    """Transforme les colonnes Est/Nord d'un système vers un autre (l'altitude n'est pas modifiée)."""
     from pyproj import Transformer
 
-    tr = Transformer.from_crs(4326, epsg_cible, always_xy=True)
+    tr = Transformer.from_crs(epsg_source, epsg_cible, always_xy=True)
     x, y = tr.transform(df["Est"].to_numpy(), df["Nord"].to_numpy())
     out = df.copy()
     out["Est"], out["Nord"] = x, y
     return out
+
+
+def wgs84_vers_metres(df: pd.DataFrame, epsg_cible: int) -> pd.DataFrame:
+    """Convertit Est=longitude / Nord=latitude (EPSG:4326) vers un CRS projeté en mètres."""
+    return transformer_points(df, 4326, epsg_cible)
 
 
 def centre_wgs84(df: pd.DataFrame, epsg_source):
@@ -284,7 +291,9 @@ def afficher_liens(libelle: str, centre) -> None:
         st.markdown(f"**{libelle}** : position non calculable — vérifiez le système de coordonnées.")
     else:
         lat, lon = centre
-        st.markdown(f"**{libelle}** ({lat:.5f}, {lon:.5f})  \n{liens_carte(lat, lon, libelle)}")
+        st.markdown(f"**{libelle}**")
+        st.code(f"{lat:.6f}, {lon:.6f}", language=None)  # copiable (bouton de copie), collable dans Google Maps
+        st.markdown(liens_carte(lat, lon, libelle))
 
 
 def emprise(df: pd.DataFrame) -> tuple[float, float, float, float]:
@@ -495,6 +504,69 @@ seuil = st.sidebar.number_input(
 # ----------------------------------------------------------------------------
 st.title("🏗️ Calcul de Cubature MNT")
 st.caption("Importez le terrain naturel et le terrain projeté pour obtenir déblais, remblais et balance.")
+
+with st.expander("🔄 Transformation Lambert-93 ⇄ Conique conforme (CC42 à CC50)"):
+    sens = st.radio("Sens de la transformation", ("Lambert-93 → CC", "CC → Lambert-93"),
+                    horizontal=True, key="tr_sens")
+    zone_cc = st.selectbox("Zone Conique conforme", list(ZONES_CC), index=5, key="tr_zone",
+                           help="CC47 (EPSG:3947) couvre les latitudes 46° à 48° N, dont la Vendée.")
+    epsg_cc = ZONES_CC[zone_cc]
+    nom_cc = zone_cc.split(" ")[0]
+    if sens.startswith("Lambert"):
+        ep_src, ep_dst, nom_src, nom_dst = 2154, epsg_cc, "Lambert-93", nom_cc
+    else:
+        ep_src, ep_dst, nom_src, nom_dst = epsg_cc, 2154, nom_cc, "Lambert-93"
+    st.caption("Même datum (RGF93) : simple changement de projection, sans perte de précision. "
+               "L'altitude n'est pas modifiée.")
+    t_pt, t_fic = st.tabs(["Un point", "Fichier de points"])
+    with t_pt:
+        ce, cn = st.columns(2)
+        e_in = ce.number_input(f"Est {nom_src} (m)", value=0.0, step=1.0, format="%.3f", key="tr_e")
+        n_in = cn.number_input(f"Nord {nom_src} (m)", value=0.0, step=1.0, format="%.3f", key="tr_n")
+        if e_in or n_in:
+            try:
+                r = transformer_points(pd.DataFrame({"Est": [e_in], "Nord": [n_in]}), ep_src, ep_dst)
+                x_out, y_out = float(r["Est"].iloc[0]), float(r["Nord"].iloc[0])
+                if np.isfinite(x_out) and np.isfinite(y_out):
+                    ro, rn = st.columns(2)
+                    ro.markdown(f"**Est {nom_dst} (m)**")
+                    ro.code(f"{x_out:.3f}", language=None)
+                    rn.markdown(f"**Nord {nom_dst} (m)**")
+                    rn.code(f"{y_out:.3f}", language=None)
+                else:
+                    st.warning("Coordonnées hors du domaine de validité de la projection.")
+            except ImportError:
+                st.error("❌ La transformation nécessite la bibliothèque `pyproj` (pip install pyproj).")
+            except Exception as e:
+                st.error(f"❌ {e}")
+    with t_fic:
+        f_tr = st.file_uploader("Fichier Est;Nord;Altitude (CSV ou TXT)", type=["csv", "txt"], key="tr_fic")
+        if f_tr is not None:
+            try:
+                d_in, i_in = lire_points(f_tr)
+                d_out = transformer_points(d_in, ep_src, ep_dst)
+                st.success(f"✅ {len(d_out)} point(s) transformé(s) : {nom_src} → {nom_dst}")
+                if i_in["invalides"] or i_in["doublons"]:
+                    st.caption(f"⚠️ {i_in['invalides']} ligne(s) invalide(s) ignorée(s), "
+                               f"{i_in['doublons']} doublon(s) XY fusionné(s).")
+                st.dataframe(
+                    d_out[REQUIRED], use_container_width=True, height=250,
+                    column_config={
+                        "Est": st.column_config.NumberColumn("Est", format="%.3f"),
+                        "Nord": st.column_config.NumberColumn("Nord", format="%.3f"),
+                        "Altitude": st.column_config.NumberColumn("Altitude", format="%.2f"),
+                    },
+                )
+                nom_sortie = f_tr.name.rsplit(".", 1)[0] + f"_{nom_dst}.csv"
+                st.download_button(
+                    f"📥 Télécharger en {nom_dst} (CSV)",
+                    d_out[REQUIRED].to_csv(index=False, sep=";", float_format="%.3f").encode("utf-8-sig"),
+                    file_name=nom_sortie, mime="text/csv",
+                )
+            except ImportError:
+                st.error("❌ La transformation nécessite la bibliothèque `pyproj` (pip install pyproj).")
+            except Exception as e:
+                st.error(f"❌ {f_tr.name} : {e}")
 
 col1, col2 = st.columns(2)
 donnees = {}
