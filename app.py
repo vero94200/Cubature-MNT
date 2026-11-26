@@ -4,9 +4,8 @@ import re
 
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
-
-from PIL import Image
 
 from src.cubature import (
     calculate_cubature_tin,
@@ -214,41 +213,50 @@ NEUTRE = np.array([130, 130, 130], dtype=float)
 FOND = np.array([30, 34, 40], dtype=np.uint8)  # hors données
 
 
-def image_carte(diff: np.ndarray, seuil: float) -> Image.Image:
-    """Image de la carte : jaune = déblais, rouge = remblais, gris = écart négligeable.
+def figure_carte(xi, yi, diff: np.ndarray, seuil: float) -> go.Figure:
+    """Carte interactive (zoom, déplacement, survol) : jaune = déblais, rouge = remblais, gris = négligeable.
 
     La couleur est plus vive quand l'épaisseur à déblayer/remblayer est grande.
-    Le nord est en haut.
     """
+    # Sous-échantillonnage si trop dense (fluidité de l'affichage)
+    pas = int(np.ceil(max(diff.shape) / 800))
+    if pas > 1:
+        diff, xi, yi = diff[::pas, ::pas], xi[::pas], yi[::pas]
+
     valid = ~np.isnan(diff)
-    absd = np.where(valid, np.abs(diff), 0.0)
-    vmax = np.percentile(absd[valid], 95) if valid.any() else 1.0
-    vmax = max(vmax, 1e-6)
-    inten = 0.55 + 0.45 * np.clip(absd / vmax, 0, 1)  # 0,55 -> 1
+    vmax = float(np.percentile(np.abs(diff[valid]), 95)) if valid.any() else 1.0
+    vmax = max(vmax, 1e-6, seuil * 1.001)
 
-    img = np.empty(diff.shape + (3,), dtype=np.uint8)
-    img[:] = FOND
+    t = min(seuil / (2 * vmax), 0.499)
+    a, b = 0.5 - t, 0.5 + t
 
-    cut = valid & (diff > seuil)
-    fill = valid & (diff < -seuil)
-    neutre = valid & ~cut & ~fill
+    def rgb(c, k=1.0):
+        return "rgb({},{},{})".format(*(int(v * k) for v in c))
 
-    img[cut] = (JAUNE * inten[cut, None]).astype(np.uint8)
-    img[fill] = (ROUGE * inten[fill, None]).astype(np.uint8)
-    img[neutre] = NEUTRE.astype(np.uint8)
+    colorscale = [
+        [0.0, rgb(ROUGE)], [a, rgb(ROUGE, 0.55)],
+        [a, rgb(NEUTRE)], [b, rgb(NEUTRE)],
+        [b, rgb(JAUNE, 0.55)], [1.0, rgb(JAUNE)],
+    ]
 
-    img = img[::-1]  # lignes croissantes en Nord -> nord en haut
-
-    # Sous-échantillonnage si trop grand, agrandissement net si trop petit
-    cote = max(img.shape[:2])
-    if cote > 1200:
-        pas = int(np.ceil(cote / 1200))
-        img = img[::pas, ::pas]
-    pil = Image.fromarray(img)
-    facteur = max(1, int(600 // max(pil.size)))
-    if facteur > 1:
-        pil = pil.resize((pil.width * facteur, pil.height * facteur), Image.NEAREST)
-    return pil
+    fig = go.Figure(
+        go.Heatmap(
+            x=xi, y=yi, z=diff,
+            zmin=-vmax, zmax=vmax, colorscale=colorscale,
+            hoverongaps=False,
+            hovertemplate="Est : %{x:.1f} m<br>Nord : %{y:.1f} m<br>Écart : %{z:+.2f} m<extra></extra>",
+            colorbar=dict(title="Écart (m)", thickness=14),
+        )
+    )
+    fig.update_layout(
+        height=600,
+        margin=dict(l=0, r=0, t=10, b=0),
+        plot_bgcolor=rgb(FOND),
+        xaxis=dict(title="Est (m)", showgrid=False, tickformat=".0f"),
+        yaxis=dict(title="Nord (m)", showgrid=False, tickformat=".0f",
+                   scaleanchor="x", scaleratio=1),
+    )
+    return fig
 
 
 def legende_carte(seuil: float):
@@ -263,13 +271,6 @@ def legende_carte(seuil: float):
         """,
         unsafe_allow_html=True,
     )
-
-
-def carte_points(df: pd.DataFrame):
-    """Nuage de points coloré par altitude (échantillonné si volumineux)."""
-    if len(df) > 5000:
-        df = df.sample(5000, random_state=0)
-    st.scatter_chart(df, x="Est", y="Nord", color="Altitude", height=320)
 
 
 def surface(df: pd.DataFrame) -> float:
@@ -431,7 +432,6 @@ for cle, col, titre in cols:
                     "Altitude": st.column_config.NumberColumn("Altitude", format="%.2f"),
                 },
             )
-            carte_points(df)
         except ImportError:
             st.error("❌ La conversion WGS84 nécessite la bibliothèque `pyproj` (pip install pyproj).")
         except Exception as e:
@@ -516,9 +516,6 @@ if res:
         st.metric("Coût de transport estimé", f"{abs(balance) * prix_m3:,.0f} €".replace(",", " "),
                   help="Calculé sur le volume absolu de la balance.")
 
-    chart_df = pd.DataFrame({"Volume (m³)": [deb, rem]}, index=["Déblais", "Remblais"])
-    st.bar_chart(chart_df, height=240)
-
     ecarts = res.get("ecarts")
     if ecarts is not None:
         xi, yi, diff, res_carte = ecarts
@@ -532,11 +529,11 @@ if res:
         m3.metric("Déblai max", f"{max(0.0, float(np.nanmax(diff))):.2f} m" if valid.any() else "—")
         m4.metric("Remblai max", f"{max(0.0, -float(np.nanmin(diff))):.2f} m" if valid.any() else "—")
 
-        st.image(image_carte(diff, seuil), use_container_width=True)
+        st.plotly_chart(figure_carte(xi, yi, diff, seuil), use_container_width=True)
         legende_carte(seuil)
         st.caption(
             f"Est : {xi.min():.1f} → {xi.max():.1f} m · Nord : {yi.min():.1f} → {yi.max():.1f} m · "
-            f"cellules de {res_carte:.2f} m · nord en haut · plus la couleur est vive, plus l'épaisseur est grande."
+            f"cellules de {res_carte:.2f} m · molette pour zoomer, glisser pour se déplacer, survol pour lire l'écart · plus la couleur est vive, plus l'épaisseur est grande."
         )
 
     rapport = pd.DataFrame(
