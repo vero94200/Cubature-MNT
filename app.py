@@ -1,6 +1,7 @@
 import csv
 import io
 import re
+from urllib.parse import quote
 
 import numpy as np
 import pandas as pd
@@ -251,6 +252,41 @@ def wgs84_vers_metres(df: pd.DataFrame, epsg_cible: int) -> pd.DataFrame:
     return out
 
 
+def centre_wgs84(df: pd.DataFrame, epsg_source):
+    """Centre (lat, lon) WGS84 de l'emprise des points ; epsg_source = 4326 si déjà en lon/lat.
+    Retourne None si le système source est inconnu ou si le résultat est incohérent."""
+    if epsg_source is None or df is None or len(df) == 0:
+        return None
+    try:
+        from pyproj import Transformer
+
+        est = (float(df["Est"].min()) + float(df["Est"].max())) / 2
+        nord = (float(df["Nord"].min()) + float(df["Nord"].max())) / 2
+        lon, lat = Transformer.from_crs(epsg_source, 4326, always_xy=True).transform(est, nord)
+    except Exception:
+        return None
+    if not (np.isfinite(lat) and np.isfinite(lon) and -90 <= lat <= 90 and -180 <= lon <= 180):
+        return None
+    return float(lat), float(lon)
+
+
+def liens_carte(lat: float, lon: float, libelle: str) -> str:
+    """Liens Markdown (Google Maps, Plans d'Apple, Google Earth) vers un point WGS84."""
+    ll = f"{lat:.6f},{lon:.6f}"
+    gmaps = f"https://www.google.com/maps/search/?api=1&query={ll}"
+    apple = f"https://maps.apple.com/?ll={ll}&q={quote(libelle)}&z=17"
+    earth = f"https://earth.google.com/web/search/{ll}"
+    return f"[Google Maps]({gmaps}) · [Plans]({apple}) · [Google Earth]({earth})"
+
+
+def afficher_liens(libelle: str, centre) -> None:
+    if centre is None:
+        st.markdown(f"**{libelle}** : position non calculable — vérifiez le système de coordonnées.")
+    else:
+        lat, lon = centre
+        st.markdown(f"**{libelle}** ({lat:.5f}, {lon:.5f})  \n{liens_carte(lat, lon, libelle)}")
+
+
 def emprise(df: pd.DataFrame) -> tuple[float, float, float, float]:
     return df["Est"].min(), df["Nord"].min(), df["Est"].max(), df["Nord"].max()
 
@@ -399,6 +435,7 @@ if methode == "grille":
     st.sidebar.info(f"Cellules de {resolution} m × {resolution} m.")
 
 st.sidebar.subheader("Système de coordonnées")
+bloc_verif = st.sidebar.container()  # rempli plus bas, une fois les fichiers lus
 mode_crs = st.sidebar.selectbox(
     "Coordonnées de vos fichiers",
     ("Détection automatique", "Projeté en mètres (Lambert-93, CC47, UTM…)",
@@ -416,18 +453,18 @@ inverser_latlon = st.sidebar.checkbox(
          "lat, lon, altitude. Sans effet sur les KML et sur les fichiers dont l'en-tête est reconnu.",
 )
 choix_proj = st.sidebar.selectbox(
-    "Projection de calcul (conversion depuis WGS84)",
+    "Projection métrique (calcul / vos fichiers)",
     ("UTM automatique",
      "Lambert-93 (EPSG:2154)",
      "CC47 – RGF93 / Conique conforme zone 7 (EPSG:3947)",
      "UTM 30N (EPSG:32630)", "UTM 31N (EPSG:32631)",
      "UTM 32N (EPSG:32632)", "Autre code EPSG…"),
     index=3,  # défaut : UTM 30N (EPSG:32630)
-    disabled=mode_crs.startswith("Projeté"),
-    help="Projection métrique dans laquelle les points WGS84 sont convertis (sans objet si vos "
-         "fichiers sont déjà en mètres). Lambert-93 : France entière. CC47 : bandes CC (zone 47°N, "
-         "ex. Vendée) pour limiter la déformation. UTM automatique : fuseau calculé depuis le "
-         "centre du fichier TN.",
+    help="Fichiers WGS84 : projection métrique vers laquelle ils sont convertis pour le calcul. "
+         "Fichiers déjà en mètres : projection d'origine de vos fichiers (nécessaire pour les liens "
+         "de vérification sur carte). Lambert-93 : France entière. CC47 : bandes CC (zone 47°N, "
+         "ex. Vendée). UTM automatique : fuseau calculé depuis le centre du fichier TN (fichiers WGS84 "
+         "uniquement).",
 )
 epsg_saisi = ""
 if choix_proj.startswith("Autre"):
@@ -541,6 +578,23 @@ if any(conversions.values()):
             b[0] for c, b in bruts.items() if conversions[c])
         epsg_cible = epsg_utm(ref["Est"].mean(), ref["Nord"].mean())
 
+if epsg_cible is None:  # fichiers déjà en mètres : la projection choisie est leur système d'origine
+    if "EPSG:" in choix_proj:
+        epsg_cible = int(choix_proj.split("EPSG:")[1].rstrip(")"))
+    elif epsg_saisi.strip().isdigit():
+        epsg_cible = int(epsg_saisi.strip())
+
+# Vérification de l'emplacement en amont (liens carte selon le système de coordonnées choisi)
+with bloc_verif:
+    st.markdown("**📍 Vérifier l'emplacement**")
+    if not bruts:
+        st.caption("Importez un fichier pour afficher les liens Google Maps, Plans et Google Earth.")
+    for cle, _, _titre in cols:
+        if cle in bruts:
+            src = 4326 if conversions[cle] else epsg_cible
+            afficher_liens("TN" if cle == "tn" else "Projet", centre_wgs84(bruts[cle][0], src))
+    st.caption("Si le point n'est pas au bon endroit, changez le système ou la projection ci-dessous.")
+
 # Phase 3 : affichage
 for cle, col, titre in cols:
     if cle not in bruts:
@@ -619,6 +673,10 @@ if st.button("🚀 Lancer le calcul", type="primary", disabled=not pret):
             "deblais": float(deb), "remblais": float(rem), "ecarts": ecarts,
             "methode": choix, "resolution": resolution,
             "tn": donnees["tn"][0], "proj": donnees["proj"][0],
+            "centres": {
+                "TN": centre_wgs84(donnees["tn"][1], epsg_cible),
+                "Projet": centre_wgs84(donnees["proj"][1], epsg_cible),
+            },
         }
     except Exception as e:
         st.error(f"❌ Une erreur est survenue : {e}")
@@ -653,6 +711,13 @@ if res:
     if prix_m3 > 0:
         st.metric("Coût de transport estimé", f"{abs(balance) * prix_m3:,.0f} €".replace(",", " "),
                   help="Calculé sur le volume absolu de la balance.")
+
+    if res.get("centres"):
+        st.markdown("##### 📍 Vérifier l'emplacement")
+        lc = st.columns(len(res["centres"]))
+        for colonne, (nom_c, centre) in zip(lc, res["centres"].items()):
+            with colonne:
+                afficher_liens(nom_c, centre)
 
     ecarts = res.get("ecarts")
     if ecarts is not None:
