@@ -776,7 +776,7 @@ col1, col2 = st.columns(2)
 donnees = {}
 cols = (("tn", col1, "1. Terrain naturel (TN)"), ("proj", col2, "2. Terrain projeté"))
 
-# Phase 1 : upload, choix de l'origine des altitudes et lecture brute
+# Phase 1 : upload et lecture brute
 MAX_EDITION = 5000  # au-delà, la saisie manuelle point par point n'est plus proposée
 bruts = {}
 fichiers = {}
@@ -785,48 +785,9 @@ for cle, col, titre in cols:
         st.subheader(titre)
         fichiers[cle] = st.file_uploader(f"Fichier {titre}", type=["csv", "txt", "kml"], key=cle,
                                          label_visibility="collapsed")
-        mode_alt = st.radio(
-            "Altitudes", ("Du fichier", "Valeur constante", "Saisie manuelle"),
-            key=f"altmode_{cle}", horizontal=True,
-            help="Du fichier : altitudes lues telles quelles. Valeur constante : une même altitude pour tous "
-                 "les points (plateforme plane, KML sans altitude). Saisie manuelle : modifier les altitudes "
-                 "point par point dans un tableau.",
-        )
-        valeur_alt = 0.0
-        if mode_alt == "Valeur constante":
-            valeur_alt = st.number_input("Altitude appliquée à tous les points (m)", value=0.0,
-                                         step=0.1, format="%.2f", key=f"altval_{cle}")
         if fichiers[cle] is not None:
             try:
-                df0, infos0 = lire_points(fichiers[cle])
-                # Fichier sans altitude : récupération IGN proposée aussi en saisie manuelle
-                # (le tableau d'édition est alors pré-rempli), inutile en valeur constante
-                if mode_alt != "Valeur constante" and bool((df0["Altitude"] == 0).all()) and semble_wgs84(df0):
-                    df0, infos0 = proposer_altitudes_ign(df0, infos0, cle, fichiers[cle])
-                if mode_alt == "Valeur constante":
-                    df0 = df0.assign(Altitude=float(valeur_alt))
-                    infos0 = {**infos0, "alt_nulle": False}
-                elif mode_alt == "Saisie manuelle":
-                    if len(df0) > MAX_EDITION:
-                        st.warning(f"Saisie manuelle limitée à {MAX_EDITION} points "
-                                   f"(fichier : {len(df0)}). Altitudes du fichier conservées.")
-                    else:
-                        with st.expander("Saisir / modifier les altitudes", expanded=True):
-                            edite = st.data_editor(
-                                df0[REQUIRED], use_container_width=True, height=250,
-                                disabled=["Est", "Nord"], num_rows="fixed",
-                                key=f"ed_{cle}_{fichiers[cle].name}_{fichiers[cle].size}",
-                                column_config={
-                                    "Est": st.column_config.NumberColumn("Est", format="%.6f"),
-                                    "Nord": st.column_config.NumberColumn("Nord", format="%.6f"),
-                                    "Altitude": st.column_config.NumberColumn("Altitude (m)", format="%.2f"),
-                                },
-                            )
-                        df0 = edite.dropna(subset=["Altitude"])
-                        if len(df0) < 3:
-                            raise ValueError("Moins de 3 points avec une altitude : impossible de calculer un MNT.")
-                        infos0 = {**infos0, "alt_nulle": False}
-                bruts[cle] = (df0, infos0)
+                bruts[cle] = lire_points(fichiers[cle])
             except Exception as e:
                 st.error(f"❌ {fichiers[cle].name} : {e}")
 
@@ -863,6 +824,60 @@ if epsg_cible is None:  # fichiers déjà en mètres : la projection choisie est
         epsg_cible = int(choix_proj.split("EPSG:")[1].rstrip(")"))
     elif epsg_saisi.strip().isdigit():
         epsg_cible = int(epsg_saisi.strip())
+
+# Phase 2b : bandeau système (juste sous le fichier chargé) puis choix des altitudes
+for cle, col, titre in cols:
+    if cle not in bruts:
+        continue
+    df0, infos0 = bruts[cle]
+    nom = fichiers[cle].name
+    with col:
+        origine = "détecté" if mode_crs.startswith("Détection") else "choisi"
+        if conversions[cle]:
+            st.success(f"✅ {nom}\n\nSystème {origine} : WGS84 (EPSG:4326) → EPSG:{epsg_cible} (m)")
+        else:
+            src = f"EPSG:{epsg_cible}" if epsg_cible else "projection non précisée"
+            st.success(f"✅ {nom}\n\nSystème {origine} : mètres ({src}) → utilisé tel quel")
+        mode_alt = st.radio(
+            "Altitudes", ("Du fichier", "Valeur constante", "Saisie manuelle"),
+            key=f"altmode_{cle}", horizontal=True,
+            help="Du fichier : altitudes lues telles quelles. Valeur constante : une même altitude pour tous "
+                 "les points (plateforme plane, KML sans altitude). Saisie manuelle : modifier les altitudes "
+                 "point par point dans un tableau.",
+        )
+        valeur_alt = 0.0
+        if mode_alt == "Valeur constante":
+            valeur_alt = st.number_input("Altitude appliquée à tous les points (m)", value=0.0,
+                                         step=0.1, format="%.2f", key=f"altval_{cle}")
+        # Fichier sans altitude : récupération IGN proposée dans tous les modes
+        # (le tableau d'édition manuelle est alors pré-rempli) ; en valeur constante,
+        # le choix de source est conservé mais la constante prime sur les altitudes
+        if bool((df0["Altitude"] == 0).all()) and semble_wgs84(df0):
+            df0, infos0 = proposer_altitudes_ign(df0, infos0, cle, fichiers[cle])
+        if mode_alt == "Valeur constante":
+            df0 = df0.assign(Altitude=float(valeur_alt))
+            infos0 = {**infos0, "alt_nulle": False}
+        elif mode_alt == "Saisie manuelle":
+            if len(df0) > MAX_EDITION:
+                st.warning(f"Saisie manuelle limitée à {MAX_EDITION} points "
+                           f"(fichier : {len(df0)}). Altitudes du fichier conservées.")
+            else:
+                with st.expander("Saisir / modifier les altitudes", expanded=True):
+                    edite = st.data_editor(
+                        df0[REQUIRED], use_container_width=True, height=250,
+                        disabled=["Est", "Nord"], num_rows="fixed",
+                        key=f"ed_{cle}_{fichiers[cle].name}_{fichiers[cle].size}",
+                        column_config={
+                            "Est": st.column_config.NumberColumn("Est", format="%.6f"),
+                            "Nord": st.column_config.NumberColumn("Nord", format="%.6f"),
+                            "Altitude": st.column_config.NumberColumn("Altitude (m)", format="%.2f"),
+                        },
+                    )
+                df0 = edite.dropna(subset=["Altitude"])
+                if len(df0) < 3:
+                    raise ValueError("Moins de 3 points avec une altitude : impossible de calculer un MNT.")
+                infos0 = {**infos0, "alt_nulle": False}
+        bruts[cle] = (df0, infos0)
 
 # Vérification de l'emplacement en amont : indépendante du choix ci-dessous (on teste les systèmes
 # plausibles), pour voir sur carte où tombent les fichiers AVANT de choisir le système de coordonnées
@@ -907,16 +922,8 @@ for cle, col, titre in cols:
             if epaisseur:
                 df = df.assign(Altitude=df["Altitude"] + float(epaisseur))
                 infos = {**infos, "epaisseur": float(epaisseur)}
-            origine = "détecté" if mode_crs.startswith("Détection") else "choisi"
             if conversions[cle]:
                 df = wgs84_vers_metres(df, epsg_cible)
-                st.success(f"✅ {nom}\n\n"
-                           f"Système {origine} : WGS84 lon/lat (EPSG:4326) → "
-                           f"converti en mètres : EPSG:{epsg_cible}")
-            else:
-                src = f"EPSG:{epsg_cible}" if epsg_cible else "projection non précisée"
-                st.success(f"✅ {nom}\n\n"
-                           f"Système {origine} : mètres ({src}) → utilisé tel quel, sans conversion")
             donnees[cle] = (nom, df, infos)
             resume(df, infos)
             st.dataframe(
