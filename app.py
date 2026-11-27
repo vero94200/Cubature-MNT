@@ -579,7 +579,8 @@ seuil = st.sidebar.number_input(
 st.title("🏗️ Calcul de Cubature MNT")
 st.caption("Importez le terrain naturel et le terrain projeté pour obtenir déblais, remblais et balance.")
 
-with bloc_transfo.expander("🔄 Transformation de coordonnées (France)"):
+bloc_transfo.subheader("Outils de transformation de coordonnées")
+with st.expander("🔄 Transformation de coordonnées (France)"):
     st.caption("Convertissez un point ou un fichier entre les systèmes français : Lambert-93, "
                "zones CC42 à CC50, anciens Lambert (NTF), UTM 30N/31N/32N et WGS84 lon/lat.")
     c_src, c_dst = st.columns(2)
