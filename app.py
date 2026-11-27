@@ -797,15 +797,6 @@ for cle, col, titre in cols:
         if mode_alt == "Valeur constante":
             valeur_alt = st.number_input("Altitude appliquée à tous les points (m)", value=0.0,
                                          step=0.1, format="%.2f", key=f"altval_{cle}")
-        epaisseur = 0.0
-        if mode_alt == "Du fichier":
-            epaisseur = st.number_input(
-                "Épaisseur ajoutée (+) ou retranchée (−) aux altitudes (m)",
-                value=0.0, step=0.05, format="%.2f", key=f"epais_{cle}",
-                help="Décale toutes les altitudes du fichier : ex. −0,30 m pour retrancher une couche "
-                     "(décappage de terre végétale), +0,10 m pour l'ajouter. S'applique aux altitudes "
-                     "lues dans le fichier ou récupérées depuis l'IGN.",
-            )
         if fichiers[cle] is not None:
             try:
                 df0, infos0 = lire_points(fichiers[cle])
@@ -836,9 +827,6 @@ for cle, col, titre in cols:
                         if len(df0) < 3:
                             raise ValueError("Moins de 3 points avec une altitude : impossible de calculer un MNT.")
                         infos0 = {**infos0, "alt_nulle": False}
-                if epaisseur:
-                    df0 = df0.assign(Altitude=df0["Altitude"] + float(epaisseur))
-                    infos0 = {**infos0, "epaisseur": float(epaisseur)}
                 bruts[cle] = (df0, infos0)
             except Exception as e:
                 st.error(f"❌ {fichiers[cle].name} : {e}")
@@ -906,6 +894,20 @@ for cle, col, titre in cols:
     nom = fichiers[cle].name
     with col:
         try:
+            # Épaisseur ajoutée (+) ou retranchée (−) aux altitudes, au-dessus du tableau
+            if st.session_state.get(f"altmode_{cle}", "Du fichier") == "Du fichier":
+                epaisseur = st.number_input(
+                    "Épaisseur ajoutée (+) ou retranchée (−) aux altitudes (m)",
+                    value=0.0, step=0.05, format="%.2f", key=f"epais_{cle}",
+                    help="Décale toutes les altitudes du fichier : ex. −0,30 m pour retrancher une couche "
+                         "(décappage de terre végétale), +0,10 m pour l'ajouter. S'applique aux altitudes "
+                         "lues dans le fichier ou récupérées depuis l'IGN.",
+                )
+            else:
+                epaisseur = 0.0
+            if epaisseur:
+                df = df.assign(Altitude=df["Altitude"] + float(epaisseur))
+                infos = {**infos, "epaisseur": float(epaisseur)}
             origine = "détecté" if mode_crs.startswith("Détection") else "choisi"
             if conversions[cle]:
                 df = wgs84_vers_metres(df, epsg_cible)
