@@ -1000,6 +1000,17 @@ if st.button("🚀 Lancer le calcul", type="primary", disabled=not pret):
             "methode": choix, "resolution": resolution,
             "tn": donnees["tn"][0], "proj": donnees["proj"][0],
             "epaisseurs": {"TN": epaisseurs["tn"], "Projet": epaisseurs["proj"]},
+            # Emprises et altitudes de chaque terrain, avec et sans épaisseur (pour le rapport)
+            "bornes": {
+                lib: {
+                    "est": (float(dfc["Est"].min()), float(dfc["Est"].max())),
+                    "nord": (float(dfc["Nord"].min()), float(dfc["Nord"].max())),
+                    "alt_sans": (float((dfc["Altitude"] - float(e)).min()),
+                                 float((dfc["Altitude"] - float(e)).max())),
+                    "alt_avec": (float(dfc["Altitude"].min()), float(dfc["Altitude"].max())),
+                }
+                for lib, dfc, e in (("TN", df_tn, epaisseurs["tn"]), ("Projet", df_proj, epaisseurs["proj"]))
+            },
             "centres": {
                 "TN": centre_wgs84(donnees["tn"][1], epsg_cible),
                 "Projet": centre_wgs84(donnees["proj"][1], epsg_cible),
@@ -1075,16 +1086,29 @@ if res:
             f"cellules de {res_carte:.2f} m · molette pour zoomer, glisser pour se déplacer, survol pour lire l'écart · plus la couleur est vive, plus l'épaisseur est grande."
         )
 
+    b = res.get("bornes", {})
+
+    def plage(t):
+        return "—" if not t else f"{t[0]:,.3f} → {t[1]:,.3f}".replace(",", " ")
+
     rapport = pd.DataFrame(
         {
             "Paramètre": ["Fichier TN", "Fichier projet", "Méthode", "Résolution (m)",
                           "Épaisseur TN (m)", "Épaisseur projet (m)",
+                          "TN — Emprise Est (m)", "TN — Emprise Nord (m)",
+                          "TN — Altitudes sans épaisseur (m)", "TN — Altitudes avec épaisseur (m)",
+                          "Projet — Emprise Est (m)", "Projet — Emprise Nord (m)",
+                          "Projet — Altitudes sans épaisseur (m)", "Projet — Altitudes avec épaisseur (m)",
                           "Déblais (m³)", "Remblais (m³)", "Foisonnement (%)", "Tassement (%)",
                           "Déblais foisonnés (m³)", "Remblais à approvisionner (m³)", "Balance (m³)",
                           "Surface de calcul (m²)"],
             "Valeur": [res["tn"], res["proj"], res["methode"],
                        res["resolution"] if res["methode"].startswith("Grille") else "—",
                        res.get("epaisseurs", {}).get("TN", 0.0), res.get("epaisseurs", {}).get("Projet", 0.0),
+                       plage(b.get("TN", {}).get("est")), plage(b.get("TN", {}).get("nord")),
+                       plage(b.get("TN", {}).get("alt_sans")), plage(b.get("TN", {}).get("alt_avec")),
+                       plage(b.get("Projet", {}).get("est")), plage(b.get("Projet", {}).get("nord")),
+                       plage(b.get("Projet", {}).get("alt_sans")), plage(b.get("Projet", {}).get("alt_avec")),
                        round(deb, 2), round(rem, 2), foisonnement, tassement,
                        round(deb_f, 2), round(rem_t, 2), round(balance, 2),
                        round(surface_calcul) if surface_calcul is not None else "—"],
