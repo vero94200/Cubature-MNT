@@ -571,6 +571,8 @@ def resume(df: pd.DataFrame, infos: dict):
     if infos.get("alt_nulle"):
         st.caption("⚠️ Aucune altitude (ou toutes à 0) dans le KML : utilisez l'option « Altitudes » "
                    "sous le fichier (valeur constante ou saisie manuelle).")
+    if infos.get("epaisseur"):
+        st.caption(f"ℹ️ Altitudes décalées de {infos['epaisseur']:+.2f} m (épaisseur de couche).")
     if infos.get("avertissement"):
         st.caption(f"ℹ️ {infos['avertissement']}")
     if infos["invalides"] or infos["doublons"]:
@@ -775,6 +777,15 @@ for cle, col, titre in cols:
         if mode_alt == "Valeur constante":
             valeur_alt = st.number_input("Altitude appliquée à tous les points (m)", value=0.0,
                                          step=0.1, format="%.2f", key=f"altval_{cle}")
+        epaisseur = 0.0
+        if mode_alt == "Du fichier":
+            epaisseur = st.number_input(
+                "Épaisseur ajoutée (+) ou retranchée (−) aux altitudes (m)",
+                value=0.0, step=0.05, format="%.2f", key=f"epais_{cle}",
+                help="Décale toutes les altitudes du fichier : ex. −0,30 m pour retrancher une couche "
+                     "(décappage de terre végétale), +0,10 m pour l'ajouter. S'applique aux altitudes "
+                     "lues dans le fichier ou récupérées depuis l'IGN.",
+            )
         if fichiers[cle] is not None:
             try:
                 df0, infos0 = lire_points(fichiers[cle])
@@ -803,6 +814,9 @@ for cle, col, titre in cols:
                         infos0 = {**infos0, "alt_nulle": False}
                 if mode_alt == "Du fichier" and bool((df0["Altitude"] == 0).all()) and semble_wgs84(df0):
                     df0, infos0 = proposer_altitudes_ign(df0, infos0, cle, fichiers[cle])
+                if epaisseur:
+                    df0 = df0.assign(Altitude=df0["Altitude"] + float(epaisseur))
+                    infos0 = {**infos0, "epaisseur": float(epaisseur)}
                 bruts[cle] = (df0, infos0)
             except Exception as e:
                 st.error(f"❌ {fichiers[cle].name} : {e}")
@@ -945,6 +959,10 @@ if st.button("🚀 Lancer le calcul", type="primary", disabled=not pret):
             "deblais": float(deb), "remblais": float(rem), "ecarts": ecarts,
             "methode": choix, "resolution": resolution,
             "tn": donnees["tn"][0], "proj": donnees["proj"][0],
+            "epaisseurs": {
+                "TN": donnees["tn"][2].get("epaisseur", 0.0),
+                "Projet": donnees["proj"][2].get("epaisseur", 0.0),
+            },
             "centres": {
                 "TN": centre_wgs84(donnees["tn"][1], epsg_cible),
                 "Projet": centre_wgs84(donnees["proj"][1], epsg_cible),
@@ -1024,11 +1042,13 @@ if res:
     rapport = pd.DataFrame(
         {
             "Paramètre": ["Fichier TN", "Fichier projet", "Méthode", "Résolution (m)",
+                          "Épaisseur TN (m)", "Épaisseur projet (m)",
                           "Déblais (m³)", "Remblais (m³)", "Foisonnement (%)", "Tassement (%)",
                           "Déblais foisonnés (m³)", "Remblais à approvisionner (m³)", "Balance (m³)",
                           "Surface de calcul (m²)"],
             "Valeur": [res["tn"], res["proj"], res["methode"],
                        res["resolution"] if res["methode"].startswith("Grille") else "—",
+                       res.get("epaisseurs", {}).get("TN", 0.0), res.get("epaisseurs", {}).get("Projet", 0.0),
                        round(deb, 2), round(rem, 2), foisonnement, tassement,
                        round(deb_f, 2), round(rem_t, 2), round(balance, 2),
                        round(surface_calcul) if surface_calcul is not None else "—"],
