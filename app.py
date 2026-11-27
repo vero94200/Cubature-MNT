@@ -995,11 +995,36 @@ if st.button("🚀 Lancer le calcul", type="primary", disabled=not pret):
             except Exception as e_carte:
                 ecarts = None
                 st.warning(f"Carte indisponible : {e_carte}")
+
+        def _desc_altitudes(cle, epais):
+            """Description du mode d'altitudes : du fichier / constante / IGN / épaisseur."""
+            mode = st.session_state.get(f"altmode_{cle}", "Du fichier")
+            parts = [mode]
+            if fichiers[cle] is not None:
+                f = fichiers[cle]
+                cle_alt = f"altign_{cle}_{f.name}_{f.size}"
+                if cle_alt in st.session_state:
+                    parts.append(f"altitudes IGN ({st.session_state[cle_alt][0]})")
+            if epais:
+                parts.append(f"épaisseur {epais:+.2f} m")
+            return " — ".join(parts)
+
         st.session_state["resultat"] = {
             "deblais": float(deb), "remblais": float(rem), "ecarts": ecarts,
             "methode": choix, "resolution": resolution,
             "tn": donnees["tn"][0], "proj": donnees["proj"][0],
             "epaisseurs": {"TN": epaisseurs["tn"], "Projet": epaisseurs["proj"]},
+            "altitudes": {"TN": _desc_altitudes("tn", epaisseurs["tn"]),
+                          "Projet": _desc_altitudes("proj", epaisseurs["proj"])},
+            # Les 4 tables de points pour le rapport (TN / Projet, avec / sans épaisseur)
+            "points": {
+                "TN — sans épaisseur": df_tn.assign(
+                    Altitude=df_tn["Altitude"] - float(epaisseurs["tn"]))[REQUIRED],
+                "TN — avec épaisseur": df_tn[REQUIRED],
+                "Projet — sans épaisseur": df_proj.assign(
+                    Altitude=df_proj["Altitude"] - float(epaisseurs["proj"]))[REQUIRED],
+                "Projet — avec épaisseur": df_proj[REQUIRED],
+            },
             # Emprises et altitudes de chaque terrain, avec et sans épaisseur (pour le rapport)
             "bornes": {
                 lib: {
@@ -1095,6 +1120,7 @@ if res:
         {
             "Paramètre": ["Fichier TN", "Fichier projet", "Méthode", "Résolution (m)",
                           "Épaisseur TN (m)", "Épaisseur projet (m)",
+                          "Altitudes TN", "Altitudes Projet",
                           "TN — Emprise Est (m)", "TN — Emprise Nord (m)",
                           "TN — Altitudes sans épaisseur (m)", "TN — Altitudes avec épaisseur (m)",
                           "Projet — Emprise Est (m)", "Projet — Emprise Nord (m)",
@@ -1105,6 +1131,7 @@ if res:
             "Valeur": [res["tn"], res["proj"], res["methode"],
                        res["resolution"] if res["methode"].startswith("Grille") else "—",
                        res.get("epaisseurs", {}).get("TN", 0.0), res.get("epaisseurs", {}).get("Projet", 0.0),
+                       res.get("altitudes", {}).get("TN", "—"), res.get("altitudes", {}).get("Projet", "—"),
                        plage(b.get("TN", {}).get("est")), plage(b.get("TN", {}).get("nord")),
                        plage(b.get("TN", {}).get("alt_sans")), plage(b.get("TN", {}).get("alt_avec")),
                        plage(b.get("Projet", {}).get("est")), plage(b.get("Projet", {}).get("nord")),
@@ -1114,9 +1141,14 @@ if res:
                        round(surface_calcul) if surface_calcul is not None else "—"],
         }
     )
+    # Rapport + les 4 tables de points (tous les points), séparées par une ligne vide
+    sections = [rapport.to_csv(index=False, sep=";")]
+    for titre, dfp in res.get("points", {}).items():
+        sections.append("\n" + titre + "\n"
+                        + dfp.to_csv(index=False, sep=";", float_format="%.3f"))
     st.download_button(
         "📥 Télécharger le rapport (CSV)",
-        rapport.to_csv(index=False, sep=";").encode("utf-8-sig"),
+        "".join(sections).encode("utf-8-sig"),
         file_name="rapport_cubature.csv",
         mime="text/csv",
     )
