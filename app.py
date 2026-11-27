@@ -42,6 +42,13 @@ SYSTEMES_FRANCE = {
 }
 # Codes EPSG des anciennes zones NTF (transformation avec changement de datum)
 EPSG_NTF = {27561, 27562, 27563, 27564, 27572}
+# Ressources du service de calcul altimétrique de l'IGN (Géoplateforme), pour récupérer
+# les altitudes d'un fichier KML/CSV sans altitude — https://data.geopf.fr/altimetrie/resources
+RESSOURCES_ALTI = {
+    "LiDAR HD – sans interpolation (défaut)": "ign_lidar_hd_mnt_multi_wld",
+    "LiDAR HD – avec interpolation": "ign_lidar_hd_mnt_mono_wld",
+    "RGE ALTI (MNT 1 m)": "ign_rge_alti_par_territoires",
+}
 MAPPING = {
     "est": "Est", "x": "Est", "easting": "Est", "e": "Est",
     "nord": "Nord", "y": "Nord", "northing": "Nord", "n": "Nord",
@@ -277,6 +284,80 @@ def transformer_points(df: pd.DataFrame, epsg_source: int, epsg_cible: int) -> p
 def wgs84_vers_metres(df: pd.DataFrame, epsg_cible: int) -> pd.DataFrame:
     """Convertit Est=longitude / Nord=latitude (EPSG:4326) vers un CRS projeté en mètres."""
     return transformer_points(df, 4326, epsg_cible)
+
+
+def altitudes_ign(lons, lats, resource: str, taille_paquet: int = 100) -> np.ndarray:
+    """Interroge le service de calcul altimétrique de l'IGN (data.geopf.fr) par paquets.
+
+    Est=longitude, Nord=latitude (WGS84). Renvoie un tableau d'altitudes (NaN si le point
+    est hors couverture, le service renvoyant -99999). Limite d'usage : 5 requêtes/s par IP.
+    """
+    import json
+    import time
+    import urllib.parse
+    import urllib.request
+
+    alt = np.full(len(lons), np.nan)
+    url = "https://data.geopf.fr/altimetrie/1.0/calcul/alti/rest/elevation.json"
+    for i in range(0, len(lons), taille_paquet):
+        lo = [f"{v:.6f}" for v in lons[i:i + taille_paquet]]
+        la = [f"{v:.6f}" for v in lats[i:i + taille_paquet]]
+        qs = urllib.parse.urlencode({
+            "lon": "|".join(lo), "lat": "|".join(la), "resource": resource,
+            "delimiter": "|", "indent": "false", "measures": "false", "zonly": "false",
+        })
+        req = urllib.request.Request(f"{url}?{qs}", headers={"User-Agent": "cubature-mnt/1.0"})
+        with urllib.request.urlopen(req, timeout=30) as rep:
+            data = json.loads(rep.read().decode("utf-8"))
+        for j, e in enumerate(data.get("elevations", [])[:len(lo)]):
+            z = e.get("z")
+            if z is not None and float(z) > -90000:
+                alt[i + j] = float(z)
+        if i + taille_paquet < len(lons):
+            time.sleep(0.25)  # respect de la limite de 5 requêtes/s
+    return alt
+
+
+def proposer_altitudes_ign(df0: pd.DataFrame, infos0: dict, cle: str, fichier) -> tuple[pd.DataFrame, dict]:
+    """Fichier WGS84 sans altitude : propose la récupération depuis le service altimétrique IGN.
+
+    Le résultat est mémorisé dans st.session_state (par fichier et source choisie) pour ne pas
+    être perdu au rechargement de la page. Retourne (df, infos) mis à jour.
+    """
+    cle_alt = f"altign_{cle}_{fichier.name}_{fichier.size}"
+    st.warning("⚠️ Aucune altitude (ou toutes à 0) dans ce fichier.")
+    if len(df0) > 2000:
+        st.caption(f"{len(df0):,} points : interrogation de l'IGN par paquets de 100 "
+                   f"(max 5 requêtes/s), comptez environ {len(df0) / 400:.0f} s.".replace(",", " "))
+    src_alt = st.radio(
+        "Source altimétrique IGN", list(RESSOURCES_ALTI), key=f"altsrc_{cle}",
+        help="LiDAR HD : relevés laser IGN (couverture complète en Vendée), précision décimétrique. "
+             "« Sans interpolation » : altitude de la mesure LiDAR la plus proche (brute). "
+             "« Avec interpolation » : valeur interpolée entre les mesures voisines. "
+             "RGE ALTI : MNT 1 m de référence IGN. Altitudes en mètres, arrondies au cm.",
+    )
+    if st.button("🌐 Récupérer les altitudes depuis l'IGN", key=f"altrbt_{cle}", type="primary"):
+        try:
+            with st.spinner("Interrogation du service altimétrique de l'IGN..."):
+                z = altitudes_ign(df0["Est"].to_numpy(), df0["Nord"].to_numpy(), RESSOURCES_ALTI[src_alt])
+            n_ok = int(np.isfinite(z).sum())
+            if n_ok == 0:
+                st.error("Aucune altitude récupérée : zone hors couverture IGN ou service indisponible.")
+                return df0, infos0
+            df0 = df0.assign(Altitude=z)
+            st.session_state[cle_alt] = (src_alt, df0[REQUIRED].copy())
+            st.success(f"✅ Altitudes récupérées pour {n_ok:,} point(s) — source : {src_alt}."
+                       .replace(",", " "))
+            if n_ok < len(df0):
+                st.caption(f"⚠️ {len(df0) - n_ok} point(s) hors couverture IGN (altitude laissée à 0).")
+            return df0, {**infos0, "alt_nulle": False}
+        except Exception as e:
+            st.error(f"❌ Récupération IGN impossible : {e}")
+            return df0, infos0
+    if cle_alt in st.session_state and st.session_state[cle_alt][0] == src_alt:
+        st.caption("ℹ️ Altitudes IGN déjà récupérées pour ce fichier et cette source.")
+        return st.session_state[cle_alt][1].copy(), {**infos0, "alt_nulle": False}
+    return df0, infos0
 
 
 def centre_wgs84(df: pd.DataFrame, epsg_source):
@@ -720,6 +801,8 @@ for cle, col, titre in cols:
                         if len(df0) < 3:
                             raise ValueError("Moins de 3 points avec une altitude : impossible de calculer un MNT.")
                         infos0 = {**infos0, "alt_nulle": False}
+                if mode_alt == "Du fichier" and bool((df0["Altitude"] == 0).all()) and semble_wgs84(df0):
+                    df0, infos0 = proposer_altitudes_ign(df0, infos0, cle, fichiers[cle])
                 bruts[cle] = (df0, infos0)
             except Exception as e:
                 st.error(f"❌ {fichiers[cle].name} : {e}")
