@@ -439,12 +439,13 @@ def candidats_position(df: pd.DataFrame, wgs84_probable: bool, epsg_choisi) -> l
 
 
 def afficher_liens(libelle: str, centre, detail: str = "") -> None:
+    """Affichage compact : libellé + coordonnées copiables + liens, sur 2 lignes."""
     if centre is None:
         st.markdown(f"**{libelle}** : position non calculable — vérifiez le système de coordonnées.")
     else:
         lat, lon = centre
-        st.markdown(f"**{libelle}**" + (f" — {detail}" if detail else ""))
-        st.code(f"{lat:.6f}, {lon:.6f}", language=None)  # copiable (bouton de copie), collable dans Google Maps
+        st.markdown(f"**{libelle}**" + (f" — {detail}" if detail else "")
+                    + f" · `{lat:.6f}, {lon:.6f}`")  # code en ligne : copiable, plus compact
         st.markdown(liens_carte(lat, lon, libelle))
 
 
@@ -834,10 +835,10 @@ for cle, col, titre in cols:
     with col:
         origine = "détecté" if mode_crs.startswith("Détection") else "choisi"
         if conversions[cle]:
-            st.success(f"✅ {nom}\n\nSystème {origine} : WGS84 (EPSG:4326) → EPSG:{epsg_cible} (m)")
+            st.success(f"Système {origine} : WGS84 (EPSG:4326) → EPSG:{epsg_cible} (m)")
         else:
             src = f"EPSG:{epsg_cible}" if epsg_cible else "projection non précisée"
-            st.success(f"✅ {nom}\n\nSystème {origine} : mètres ({src}) → utilisé tel quel")
+            st.success(f"Système {origine} : mètres ({src}) → utilisé tel quel")
         mode_alt = st.radio(
             "Altitudes", ("Du fichier", "Valeur constante", "Saisie manuelle"),
             key=f"altmode_{cle}", horizontal=True,
