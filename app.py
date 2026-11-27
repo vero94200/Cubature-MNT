@@ -591,8 +591,6 @@ def resume(df: pd.DataFrame, infos: dict):
     if infos.get("alt_nulle"):
         st.caption("⚠️ Aucune altitude (ou toutes à 0) dans le KML : utilisez l'option « Altitudes » "
                    "sous le fichier (valeur constante ou saisie manuelle).")
-    if infos.get("epaisseur"):
-        st.caption(f"ℹ️ Altitudes décalées de {infos['epaisseur']:+.2f} m (épaisseur de couche).")
     if infos.get("avertissement"):
         st.caption(f"ℹ️ {infos['avertissement']}")
     if infos["invalides"] or infos["doublons"]:
@@ -909,20 +907,6 @@ for cle, col, titre in cols:
     nom = fichiers[cle].name
     with col:
         try:
-            # Épaisseur ajoutée (+) ou retranchée (−) aux altitudes, au-dessus du tableau
-            if st.session_state.get(f"altmode_{cle}", "Du fichier") == "Du fichier":
-                epaisseur = st.number_input(
-                    "Épaisseur ajoutée (+) ou retranchée (−) aux altitudes (m)",
-                    value=0.0, step=0.05, format="%.2f", key=f"epais_{cle}",
-                    help="Décale toutes les altitudes du fichier : ex. −0,30 m pour retrancher une couche "
-                         "(décappage de terre végétale), +0,10 m pour l'ajouter. S'applique aux altitudes "
-                         "lues dans le fichier ou récupérées depuis l'IGN.",
-                )
-            else:
-                epaisseur = 0.0
-            if epaisseur:
-                df = df.assign(Altitude=df["Altitude"] + float(epaisseur))
-                infos = {**infos, "epaisseur": float(epaisseur)}
             if conversions[cle]:
                 df = wgs84_vers_metres(df, epsg_cible)
             donnees[cle] = (nom, df, infos)
@@ -973,6 +957,29 @@ if pret:
     elif taux < 0.9:
         st.warning(f"⚠️ Le TN ne couvre que {taux:.0%} de l'emprise du projet : les volumes seront partiels.")
 
+# Épaisseur de couche : décalage altimétrique appliqué aux altitudes de chaque terrain avant le calcul
+epaisseurs = {"tn": 0.0, "proj": 0.0}
+if pret:
+    e_tn, e_proj = st.columns(2)
+    with e_tn:
+        epaisseurs["tn"] = st.number_input(
+            "Épaisseur ajoutée (+) ou retranchée (−) aux altitudes — TN (m)",
+            value=0.0, step=0.05, format="%.2f", key="epais_tn",
+            help="Décale toutes les altitudes du terrain naturel : ex. −0,30 m pour retrancher une couche "
+                 "(décapage de terre végétale), +0,10 m pour l'ajouter.",
+        )
+    with e_proj:
+        epaisseurs["proj"] = st.number_input(
+            "Épaisseur ajoutée (+) ou retranchée (−) aux altitudes — Projet (m)",
+            value=0.0, step=0.05, format="%.2f", key="epais_proj",
+            help="Décale toutes les altitudes du terrain projeté : ex. −0,30 m pour retrancher une couche, "
+                 "+0,10 m pour l'ajouter.",
+        )
+    if epaisseurs["tn"]:
+        df_tn = df_tn.assign(Altitude=df_tn["Altitude"] + float(epaisseurs["tn"]))
+    if epaisseurs["proj"]:
+        df_proj = df_proj.assign(Altitude=df_proj["Altitude"] + float(epaisseurs["proj"]))
+
 # ----------------------------------------------------------------------------
 # Calcul
 # ----------------------------------------------------------------------------
@@ -990,10 +997,7 @@ if st.button("🚀 Lancer le calcul", type="primary", disabled=not pret):
             "deblais": float(deb), "remblais": float(rem), "ecarts": ecarts,
             "methode": choix, "resolution": resolution,
             "tn": donnees["tn"][0], "proj": donnees["proj"][0],
-            "epaisseurs": {
-                "TN": donnees["tn"][2].get("epaisseur", 0.0),
-                "Projet": donnees["proj"][2].get("epaisseur", 0.0),
-            },
+            "epaisseurs": {"TN": epaisseurs["tn"], "Projet": epaisseurs["proj"]},
             "centres": {
                 "TN": centre_wgs84(donnees["tn"][1], epsg_cible),
                 "Projet": centre_wgs84(donnees["proj"][1], epsg_cible),
