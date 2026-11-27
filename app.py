@@ -375,7 +375,6 @@ def proposer_altitudes_ign(df0: pd.DataFrame, infos0: dict, cle: str, fichier) -
             st.error(f"❌ Récupération IGN impossible : {e}")
             return df0, infos0
     if cle_alt in st.session_state and st.session_state[cle_alt][0] == src_alt:
-        st.caption("ℹ️ Altitudes IGN déjà récupérées pour ce fichier et cette source.")
         return st.session_state[cle_alt][1].copy(), {**infos0, "alt_nulle": False}
     return df0, infos0
 
@@ -1012,9 +1011,8 @@ if res:
     k1, k2, k3 = st.columns(3)
     k1.metric("Déblais", f"{deb:,.2f} m³".replace(",", " "), help="Terrain à enlever (foisonné ci-dessous)")
     k2.metric("Remblais", f"{rem:,.2f} m³".replace(",", " "), help="Terrain à ajouter")
-    k3.metric("Balance", f"{balance:,.2f} m³".replace(",", " "),
-              delta="Excédent à évacuer" if balance > 0 else "Apport extérieur nécessaire",
-              delta_color="off",
+    k3.metric("Balance — " + ("Volume à évacuer" if balance > 0 else "Volume à apporter"),
+              f"{balance:,.2f} m³".replace(",", " "),
               help="Déblais foisonnés − remblais tassés")
 
     # Surface réellement utilisée pour le calcul : zone commune au TN et au projet
