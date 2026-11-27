@@ -366,8 +366,6 @@ def proposer_altitudes_ign(df0: pd.DataFrame, infos0: dict, cle: str, fichier) -
                 return df0, infos0
             df0 = df0.assign(Altitude=z)
             st.session_state[cle_alt] = (src_alt, df0[REQUIRED].copy())
-            st.success(f"✅ Altitudes récupérées pour {n_ok:,} point(s) — source : {src_alt}."
-                       .replace(",", " "))
             if n_ok < len(df0):
                 st.caption(f"⚠️ {len(df0) - n_ok} point(s) hors couverture IGN (altitude laissée à 0).")
             return df0, {**infos0, "alt_nulle": False}
