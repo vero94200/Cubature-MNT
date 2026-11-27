@@ -84,6 +84,26 @@ st.markdown(
         text-overflow: clip !important;
         font-size: 0.78rem !important;
     }
+    /* Bandeaux d'information (success vert, warning jaune, etc.) : plus compacts */
+    div[data-testid="stAlert"] {
+        padding-top: 0;
+        padding-bottom: 0;
+    }
+    div[data-testid="stAlertContainer"] {
+        padding-top: 6px;
+        padding-bottom: 6px;
+        min-height: 0;
+    }
+    div[data-testid="stAlertContainer"] p,
+    div[data-testid="stAlertContainer"] li {
+        font-size: 0.82rem !important;
+        margin-bottom: 0;
+    }
+    div[data-testid="stAlertContainer"] svg {
+        height: 0.95rem;
+        width: 0.95rem;
+        margin-top: 2px;
+    }
     /* Zone d'import : textes et bouton plus petits, sur plusieurs lignes */
     section[data-testid="stFileUploaderDropzone"],
     div[data-testid="stFileUploaderDropzone"] {
@@ -789,6 +809,10 @@ for cle, col, titre in cols:
         if fichiers[cle] is not None:
             try:
                 df0, infos0 = lire_points(fichiers[cle])
+                # Fichier sans altitude : récupération IGN proposée aussi en saisie manuelle
+                # (le tableau d'édition est alors pré-rempli), inutile en valeur constante
+                if mode_alt != "Valeur constante" and bool((df0["Altitude"] == 0).all()) and semble_wgs84(df0):
+                    df0, infos0 = proposer_altitudes_ign(df0, infos0, cle, fichiers[cle])
                 if mode_alt == "Valeur constante":
                     df0 = df0.assign(Altitude=float(valeur_alt))
                     infos0 = {**infos0, "alt_nulle": False}
@@ -812,8 +836,6 @@ for cle, col, titre in cols:
                         if len(df0) < 3:
                             raise ValueError("Moins de 3 points avec une altitude : impossible de calculer un MNT.")
                         infos0 = {**infos0, "alt_nulle": False}
-                if mode_alt == "Du fichier" and bool((df0["Altitude"] == 0).all()) and semble_wgs84(df0):
-                    df0, infos0 = proposer_altitudes_ign(df0, infos0, cle, fichiers[cle])
                 if epaisseur:
                     df0 = df0.assign(Altitude=df0["Altitude"] + float(epaisseur))
                     infos0 = {**infos0, "epaisseur": float(epaisseur)}
