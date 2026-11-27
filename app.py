@@ -911,16 +911,18 @@ for cle, col, titre in cols:
                 df = wgs84_vers_metres(df, epsg_cible)
             donnees[cle] = (nom, df, infos)
             resume(df, infos)
-            st.dataframe(
-                df[REQUIRED],
-                use_container_width=True,
-                height=250,
-                column_config={
-                    "Est": st.column_config.NumberColumn("Est", format="%.3f"),
-                    "Nord": st.column_config.NumberColumn("Nord", format="%.3f"),
-                    "Altitude": st.column_config.NumberColumn("Altitude", format="%.2f"),
-                },
-            )
+            # Tableau récapitulatif masqué en saisie manuelle : redondant avec le tableau d'édition
+            if st.session_state.get(f"altmode_{cle}", "Du fichier") != "Saisie manuelle":
+                st.dataframe(
+                    df[REQUIRED],
+                    use_container_width=True,
+                    height=250,
+                    column_config={
+                        "Est": st.column_config.NumberColumn("Est", format="%.3f"),
+                        "Nord": st.column_config.NumberColumn("Nord", format="%.3f"),
+                        "Altitude": st.column_config.NumberColumn("Altitude", format="%.2f"),
+                    },
+                )
         except ImportError:
             st.error("❌ La conversion WGS84 nécessite la bibliothèque `pyproj` (pip install pyproj).")
         except Exception as e:
