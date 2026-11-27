@@ -22,6 +22,26 @@ st.set_page_config(page_title="Cubature MNT", layout="wide", page_icon="🏗️"
 REQUIRED = ["Est", "Nord", "Altitude"]
 # Zones Conique Conforme (RGF93 / CC42 à CC50 = EPSG:3942 à 3950)
 ZONES_CC = {f"CC{z} (EPSG:{3900 + z})": 3900 + z for z in range(42, 51)}
+# Anciennes zones Lambert (datum NTF, remplacées par RGF93 / Lambert-93 en 2000)
+ZONES_LAMBERT_NTF = {
+    "Lambert I (NTF) (EPSG:27561)": 27561,
+    "Lambert II (NTF) (EPSG:27562)": 27562,
+    "Lambert II étendu (NTF) (EPSG:27572)": 27572,
+    "Lambert III (NTF) (EPSG:27563)": 27563,
+    "Lambert IV (NTF) (EPSG:27564)": 27564,
+}
+# Tous les systèmes proposés dans la zone de transformation (France métropolitaine)
+SYSTEMES_FRANCE = {
+    "Lambert-93 (RGF93) (EPSG:2154)": 2154,
+    **ZONES_CC,
+    **ZONES_LAMBERT_NTF,
+    "UTM 30N (WGS84) (EPSG:32630)": 32630,
+    "UTM 31N (WGS84) (EPSG:32631)": 32631,
+    "UTM 32N (WGS84) (EPSG:32632)": 32632,
+    "WGS84 lon/lat (degrés) (EPSG:4326)": 4326,
+}
+# Codes EPSG des anciennes zones NTF (transformation avec changement de datum)
+EPSG_NTF = {27561, 27562, 27563, 27564, 27572}
 MAPPING = {
     "est": "Est", "x": "Est", "easting": "Est", "e": "Est",
     "nord": "Nord", "y": "Nord", "northing": "Nord", "n": "Nord",
@@ -534,7 +554,7 @@ if choix_proj.startswith("Autre"):
         help="Exemples : 2154 (Lambert-93), 3947 (CC47), 3812 (Lambert 2008, Belgique), 32633 (UTM 33N).",
     )
 
-bloc_transfo = st.sidebar.container()  # rempli plus bas (transformation Lambert-93 ⇄ CC)
+bloc_transfo = st.sidebar.container()  # rempli plus bas (zone de transformation de coordonnées)
 
 st.sidebar.subheader("Coefficients")
 foisonnement = st.sidebar.number_input(
@@ -559,34 +579,58 @@ seuil = st.sidebar.number_input(
 st.title("🏗️ Calcul de Cubature MNT")
 st.caption("Importez le terrain naturel et le terrain projeté pour obtenir déblais, remblais et balance.")
 
-with bloc_transfo.expander("🔄 Transformation Lambert-93 ⇄ Conique conforme (CC42 à CC50)"):
-    sens = st.radio("Sens de la transformation", ("Lambert-93 → CC", "CC → Lambert-93"),
-                    horizontal=True, key="tr_sens")
-    zone_cc = st.selectbox("Zone Conique conforme", list(ZONES_CC), index=5, key="tr_zone",
-                           help="CC47 (EPSG:3947) couvre les latitudes 46° à 48° N, dont la Vendée.")
-    epsg_cc = ZONES_CC[zone_cc]
-    nom_cc = zone_cc.split(" ")[0]
-    if sens.startswith("Lambert"):
-        ep_src, ep_dst, nom_src, nom_dst = 2154, epsg_cc, "Lambert-93", nom_cc
-    else:
-        ep_src, ep_dst, nom_src, nom_dst = epsg_cc, 2154, nom_cc, "Lambert-93"
-    st.caption("Même datum (RGF93) : simple changement de projection, sans perte de précision. "
-               "L'altitude n'est pas modifiée.")
+with bloc_transfo.expander("🔄 Transformation de coordonnées (France)"):
+    st.caption("Convertissez un point ou un fichier entre les systèmes français : Lambert-93, "
+               "zones CC42 à CC50, anciens Lambert (NTF), UTM 30N/31N/32N et WGS84 lon/lat.")
+    c_src, c_dst = st.columns(2)
+    with c_src:
+        sys_src = st.selectbox("Système source", list(SYSTEMES_FRANCE), key="tr_src",
+                               help="Système dans lequel sont exprimées les coordonnées à transformer.")
+    with c_dst:
+        sys_dst = st.selectbox("Système cible", list(SYSTEMES_FRANCE),
+                               index=list(SYSTEMES_FRANCE).index("CC47 (EPSG:3947)"), key="tr_dst",
+                               help="Système dans lequel exprimer le résultat.")
+    ep_src, ep_dst = SYSTEMES_FRANCE[sys_src], SYSTEMES_FRANCE[sys_dst]
+    nom_src = re.sub(r" \(EPSG:\d+\)$", "", sys_src)
+    nom_dst = re.sub(r" \(EPSG:\d+\)$", "", sys_dst)
+    if ep_src == ep_dst:
+        st.warning("Le système source et le système cible sont identiques : rien à transformer.")
+    if {ep_src, ep_dst} & EPSG_NTF:
+        st.caption("⚠️ Changement de datum (NTF ⇄ RGF93) : la transformation passe par une grille de "
+                   "paramètres (précision centimétrique si la grille est installée, sinon approximation "
+                   "de l'ordre du mètre). Vérifiez le résultat avec les liens de vérification sur carte.")
+    if ep_src == 4326 or ep_dst == 4326:
+        st.caption("WGS84 : Est = longitude, Nord = latitude (degrés décimaux).")
     t_pt, t_fic = st.tabs(["Un point", "Fichier de points"])
     with t_pt:
         ce, cn = st.columns(2)
-        e_in = ce.number_input(f"Est {nom_src} (m)", value=0.0, step=1.0, format="%.3f", key="tr_e")
-        n_in = cn.number_input(f"Nord {nom_src} (m)", value=0.0, step=1.0, format="%.3f", key="tr_n")
-        if e_in or n_in:
+        unite_src = "°" if ep_src == 4326 else "m"
+        e_in = ce.number_input(f"Est {nom_src} ({unite_src})", value=0.0, step=1.0,
+                               format="%.6f" if ep_src == 4326 else "%.3f", key="tr_e")
+        n_in = cn.number_input(f"Nord {nom_src} ({unite_src})", value=0.0, step=1.0,
+                               format="%.6f" if ep_src == 4326 else "%.3f", key="tr_n")
+        if (e_in or n_in) and ep_src != ep_dst:
             try:
+                # Suggestion de zone CC : chaque zone CC couvre une bande de 2° de latitude
+                # (CC47 = 46° à 48° N) ; la latitude du point donne la bande adaptée
+                if sys_dst.startswith("CC"):
+                    from pyproj import Transformer
+
+                    _, lat_pt = Transformer.from_crs(ep_src, 4326, always_xy=True).transform(e_in, n_in)
+                    zone_pt = int(round(lat_pt))
+                    suggeree = f"CC{zone_pt} (EPSG:{3900 + zone_pt})"
+                    if 42 <= zone_pt <= 50 and abs(lat_pt - zone_pt) <= 1.0 and sys_dst != suggeree:
+                        st.caption(f"💡 D'après la latitude ({lat_pt:.3f}°), la zone adaptée à ce point "
+                                   f"est **CC{zone_pt}** : sélectionnez-la comme système cible.")
                 r = transformer_points(pd.DataFrame({"Est": [e_in], "Nord": [n_in]}), ep_src, ep_dst)
                 x_out, y_out = float(r["Est"].iloc[0]), float(r["Nord"].iloc[0])
                 if np.isfinite(x_out) and np.isfinite(y_out):
+                    unite_dst = "°" if ep_dst == 4326 else "m"
                     ro, rn = st.columns(2)
-                    ro.markdown(f"**Est {nom_dst} (m)**")
-                    ro.code(f"{x_out:.3f}", language=None)
-                    rn.markdown(f"**Nord {nom_dst} (m)**")
-                    rn.code(f"{y_out:.3f}", language=None)
+                    ro.markdown(f"**Est {nom_dst} ({unite_dst})**")
+                    ro.code(f"{x_out:.6f}" if ep_dst == 4326 else f"{x_out:.3f}", language=None)
+                    rn.markdown(f"**Nord {nom_dst} ({unite_dst})**")
+                    rn.code(f"{y_out:.6f}" if ep_dst == 4326 else f"{y_out:.3f}", language=None)
                 else:
                     st.warning("Coordonnées hors du domaine de validité de la projection.")
             except ImportError:
@@ -598,6 +642,9 @@ with bloc_transfo.expander("🔄 Transformation Lambert-93 ⇄ Conique conforme 
         if f_tr is not None:
             try:
                 d_in, i_in = lire_points(f_tr)
+                if ep_src == 4326:
+                    st.caption("Fichier WGS84 : le lecteur place la longitude dans « Est » et la latitude "
+                               "dans « Nord » (en-tête lon/lat reconnu ; à défaut, ordre lon, lat, alt).")
                 d_out = transformer_points(d_in, ep_src, ep_dst)
                 st.success(f"✅ {len(d_out)} point(s) transformé(s) : {nom_src} → {nom_dst}")
                 if i_in["invalides"] or i_in["doublons"]:
